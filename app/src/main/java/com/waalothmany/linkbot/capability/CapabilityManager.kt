@@ -1,8 +1,6 @@
 package com.waalothmany.linkbot.capability
 
 import android.Manifest
-import android.accessibilityservice.AccessibilityService
-import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
@@ -12,33 +10,43 @@ import androidx.core.app.NotificationManagerCompat
 import com.waalothmany.linkbot.automation.WaAccessibilityService
 
 data class CapabilitySnapshot(
-    val accessibility: Boolean,
+    val accessibilityEnabled: Boolean,
+    val accessibilityConnected: Boolean,
     val overlay: Boolean,
     val notifications: Boolean,
     val shizukuInstalled: Boolean,
     val rootAvailable: Boolean,
 ) {
-    // Overlay is deliberately optional: it controls only the floating controller,
-    // not the core Accessibility + notification automation path.
-    val coreReady: Boolean get() = accessibility && notifications
-    val mode: String get() = when {
-        rootAvailable -> "STANDARD • Root optional"
-        shizukuInstalled -> "STANDARD • Shizuku optional"
-        else -> "STANDARD"
-    }
+    /** Backward-compatible convenience for UI code while v6 migrates. */
+    val accessibility: Boolean get() = accessibilityEnabled
+
+    val coreReady: Boolean
+        get() = AccessibilityConnectionPolicy.isOperational(
+            enabledInSettings = accessibilityEnabled,
+            serviceConnected = accessibilityConnected,
+        )
+
+    /**
+     * v6 rescue intentionally advertises only the execution adapter that is
+     * actually implemented and exercised. Presence of Shizuku/root is shown
+     * separately but never promoted to an active mode without a runtime probe.
+     */
+    val mode: String get() = "STANDARD"
 
     fun asFlags() = CapabilityFlags(
-        accessibility = accessibility,
+        accessibilityEnabled = accessibilityEnabled,
+        accessibilityConnected = accessibilityConnected,
         overlay = overlay,
         notifications = notifications,
-        shizukuAvailable = shizukuInstalled,
+        shizukuInstalled = shizukuInstalled,
         rootDetected = rootAvailable,
     )
 }
 
 object CapabilityManager {
     fun snapshot(context: Context): CapabilitySnapshot = CapabilitySnapshot(
-        accessibility = isAccessibilityEnabled(context),
+        accessibilityEnabled = isAccessibilityEnabled(context),
+        accessibilityConnected = AccessibilityConnectionMonitor.state.value.connected,
         overlay = Settings.canDrawOverlays(context),
         notifications = notificationsAllowed(context),
         shizukuInstalled = isPackageInstalled(context, "moe.shizuku.privileged.api"),
@@ -55,7 +63,9 @@ object CapabilityManager {
     }
 
     private fun notificationsAllowed(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < 33) return NotificationManagerCompat.from(context).areNotificationsEnabled()
+        if (Build.VERSION.SDK_INT < 33) {
+            return NotificationManagerCompat.from(context).areNotificationsEnabled()
+        }
         return context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED &&
             NotificationManagerCompat.from(context).areNotificationsEnabled()
     }

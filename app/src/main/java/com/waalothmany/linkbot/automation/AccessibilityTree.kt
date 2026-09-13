@@ -10,6 +10,7 @@ import java.security.MessageDigest
 object AccessibilityTree {
     private val DEFAULT_GROUP_LABELS = listOf("Groups", "المجموعات", "Group chats", "دردشات المجموعات")
     private val DEFAULT_GROUP_ID_HINTS = listOf("group_filter", "filter_groups", "groups_filter", "chat_filter_group")
+    private val DEFAULT_FILTER_PEER_LABELS = listOf("All", "الكل", "Unread", "غير المقروءة", "Favorites", "المفضلة")
 
     private val systemLabels = setOf(
         "search", "بحث", "new chat", "دردشة جديدة", "archived", "المؤرشفة", "communities", "المجتمعات",
@@ -27,7 +28,7 @@ object AccessibilityTree {
         while (stack.isNotEmpty()) {
             val node = stack.removeLast()
             result += node
-            for (i in 0 until node.childCount) node.getChild(i)?.let(stack::add)
+            for (i in ChildTraversalPolicy.pushOrder(node.childCount)) node.getChild(i)?.let(stack::add)
         }
         return result
     }
@@ -46,6 +47,114 @@ object AccessibilityTree {
         }
     }
 
+    fun findByControlLabel(root: AccessibilityNodeInfo?, labels: Collection<String>): AccessibilityNodeInfo? {
+        data class Candidate(val node: AccessibilityNodeInfo, val score: Int)
+
+        return flatten(root).mapNotNull { node ->
+            val textMatches = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+                .any { value -> ControlLabelPolicy.matchesDecorated(value, labels) }
+            if (!textMatches) return@mapNotNull null
+
+            val chain = generateSequence(node as AccessibilityNodeInfo?) { it.parent }
+                .take(4)
+                .filterNotNull()
+                .toList()
+
+            val structuralControl = chain.any { candidate ->
+                val id = candidate.viewIdResourceName.orEmpty().lowercase()
+                val cls = candidate.className?.toString().orEmpty().lowercase()
+                candidate.isCheckable || candidate.isSelected || candidate.isChecked ||
+                    cls.contains("button") || cls.contains("chip") || cls.contains("tab") ||
+                    id.contains("filter") || id.contains("chip") || id.contains("tab") ||
+                    id.contains("navigation") || id.contains("action") || id.contains("menu")
+            }
+            // A matching conversation title must never be promoted to a navigation control
+            // merely because its parent row happens to be clickable.
+            if (!structuralControl) return@mapNotNull null
+
+            var score = 0
+            chain.forEachIndexed { depth, candidate ->
+                val id = candidate.viewIdResourceName.orEmpty().lowercase()
+                val cls = candidate.className?.toString().orEmpty().lowercase()
+                val depthBonus = (4 - depth).coerceAtLeast(1)
+                if (id.contains("filter") || id.contains("chip") || id.contains("tab") || id.contains("navigation") || id.contains("action")) score += 12 * depthBonus
+                if (cls.contains("button") || cls.contains("chip") || cls.contains("tab")) score += 8 * depthBonus
+                if (candidate.isSelected || candidate.isChecked) score += 8
+                if (candidate.isCheckable) score += 6
+                if (candidate.isClickable) score += 4
+            }
+            Candidate(node, score)
+        }.maxByOrNull { it.score }?.node
+    }
+
+    /**
+     * Finds a WhatsApp filter chip even when its accessibility node is only a
+     * generic TextView inside a clickable chip container. A relaxed match is
+     * accepted only when the node lives in a local cluster exposing at least
+     * two peer filter labels, which avoids mistaking a chat named "Groups" for
+     * the actual Groups filter.
+     */
+    fun findFilterControl(
+        root: AccessibilityNodeInfo?,
+        labels: Collection<String>,
+        peerLabels: Collection<String>,
+    ): AccessibilityNodeInfo? {
+        findByControlLabel(root, labels)?.let { return it }
+        if (root == null || peerLabels.isEmpty()) return null
+
+        val candidates = flatten(root).filter { node ->
+            listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+                .any { ControlLabelPolicy.matchesDecorated(it, labels) }
+        }
+
+        for (candidate in candidates) {
+            val chain = generateSequence(candidate as AccessibilityNodeInfo?) { it.parent }
+                .take(6)
+                .filterNotNull()
+                .toList()
+            val clickablePath = chain.any { it.isClickable || it.isCheckable }
+            var peerLabelsFound = 0
+            for (ancestor in chain) {
+                val found = LinkedHashSet<String>()
+                for (node in flatten(ancestor)) {
+                    val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+                    peerLabels.forEach { peer ->
+                        if (values.any { value -> ControlLabelPolicy.matchesDecorated(value, listOf(peer)) }) {
+                            found += ControlLabelPolicy.canonical(peer)
+                        }
+                    }
+                }
+                peerLabelsFound = maxOf(peerLabelsFound, found.size)
+                if (ancestor.isScrollable) break
+            }
+            if (ControlClusterPolicy.accept(
+                    labelMatched = true,
+                    strictStructuralControl = false,
+                    clickablePath = clickablePath,
+                    peerLabelsFound = peerLabelsFound,
+                )
+            ) return candidate
+        }
+        return null
+    }
+
+    fun controlSelectionEvidence(node: AccessibilityNodeInfo?): FilterEvidence {
+        node ?: return FilterEvidence.UNKNOWN
+        val chain = generateSequence(node as AccessibilityNodeInfo?) { it.parent }.take(4).toList()
+        if (chain.any { it.isSelected || it.isChecked }) return FilterEvidence.ACTIVE
+        val stateText = chain.flatMap { candidate ->
+            buildList {
+                candidate.contentDescription?.toString()?.let(::add)
+                if (Build.VERSION.SDK_INT >= 30) candidate.stateDescription?.toString()?.let(::add)
+            }
+        }.joinToString(" ").lowercase()
+        if (stateText.contains("selected") || stateText.contains("active") || stateText.contains("محدد") || stateText.contains("مفعّل") || stateText.contains("مفعل")) {
+            return FilterEvidence.ACTIVE
+        }
+        if (chain.any { it.isCheckable }) return FilterEvidence.INACTIVE
+        return FilterEvidence.UNKNOWN
+    }
+
     fun findByViewIdHints(root: AccessibilityNodeInfo?, hints: Collection<String>): AccessibilityNodeInfo? {
         val lowered = hints.map { it.lowercase() }
         return flatten(root).firstOrNull { node ->
@@ -55,21 +164,10 @@ object AccessibilityTree {
     }
 
     fun filterEvidence(root: AccessibilityNodeInfo?, labels: Collection<String>, idHints: Collection<String>): FilterEvidence {
-        val node = findByViewIdHints(root, idHints) ?: findByAnyText(root, labels) ?: return FilterEvidence.UNKNOWN
-        val chain = generateSequence(node as AccessibilityNodeInfo?) { it.parent }.take(4).toList()
-        if (chain.any { it.isSelected || it.isChecked }) return FilterEvidence.ACTIVE
-
-        val stateText = chain.flatMap { candidate ->
-            buildList {
-                candidate.contentDescription?.toString()?.let(::add)
-                if (Build.VERSION.SDK_INT >= 30) candidate.stateDescription?.toString()?.let(::add)
-            }
-        }.joinToString(" ").lowercase()
-        if (stateText.contains("selected") || stateText.contains("active") || stateText.contains("محدد") || stateText.contains("مفعّل")) {
-            return FilterEvidence.ACTIVE
-        }
-        if (chain.any { it.isCheckable }) return FilterEvidence.INACTIVE
-        return FilterEvidence.UNKNOWN
+        val node = findByViewIdHints(root, idHints)
+            ?: findFilterControl(root, labels, DEFAULT_FILTER_PEER_LABELS)
+            ?: return FilterEvidence.UNKNOWN
+        return controlSelectionEvidence(node)
     }
 
     fun findEditable(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? = flatten(root).firstOrNull {
@@ -81,6 +179,16 @@ object AccessibilityTree {
         repeat(6) {
             if (current == null) return false
             if (current!!.isClickable && current!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            current = current!!.parent
+        }
+        return false
+    }
+
+    fun longClick(node: AccessibilityNodeInfo?): Boolean {
+        var current = node
+        repeat(6) {
+            if (current == null) return false
+            if (current!!.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return true
             current = current!!.parent
         }
         return false
@@ -164,7 +272,7 @@ object AccessibilityTree {
                     .forEach(out::add)
             }
             n.contentDescription?.toString()?.trim()?.takeIf(String::isNotBlank)?.let(out::add)
-            for (i in 0 until n.childCount) n.getChild(i)?.let(stack::add)
+            for (i in ChildTraversalPolicy.pushOrder(n.childCount)) n.getChild(i)?.let(stack::add)
         }
         return out.distinct()
     }
@@ -195,6 +303,47 @@ object AccessibilityTree {
         }
         // Do not collapse rows by title/structure: two real groups may legitimately share both.
         // Cross-viewport reconciliation in the sync engine handles overlap and identity.
+        return rows
+    }
+
+    fun firstConversationRowNode(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        val container = bestConversationScrollable(root) ?: return null
+        for (i in 0 until container.childCount) {
+            val child = container.getChild(i) ?: continue
+            val allText = collectText(child)
+            if (allText.isEmpty()) continue
+            val title = titleFor(child, allText) ?: continue
+            val subtree = flatten(child)
+            val viewIds = subtree.mapNotNull { it.viewIdResourceName }
+            val subtreeClickable = subtree.any { it !== child && it.isClickable }
+            if (RowClassificationPolicy.isLikelyConversationRow(title, child.isClickable, subtreeClickable, viewIds)) return child
+        }
+        return null
+    }
+
+    fun conservativeGroupRowCandidates(root: AccessibilityNodeInfo?): List<RowCandidate> {
+        val container = bestConversationScrollable(root) ?: return emptyList()
+        val rows = ArrayList<RowCandidate>()
+        for (i in 0 until container.childCount) {
+            val child = container.getChild(i) ?: continue
+            val allText = collectText(child)
+            if (allText.isEmpty()) continue
+            val title = titleFor(child, allText) ?: continue
+            val subtree = flatten(child)
+            val viewIds = subtree.mapNotNull { it.viewIdResourceName }
+            val subtreeClickable = subtree.any { it !== child && it.isClickable }
+            if (!RowClassificationPolicy.isLikelyConversationRow(title, child.isClickable, subtreeClickable, viewIds)) continue
+            if (!ConservativeGroupRowPolicy.isLikelyGroup(title, allText, viewIds)) continue
+            val unread = RowClassificationPolicy.isUnread(allText)
+            rows += RowCandidate(
+                title = title,
+                unread = unread,
+                unreadCount = if (unread) RowClassificationPolicy.extractUnreadCount(allText) else null,
+                active = RowClassificationPolicy.isActive(allText),
+                preview = RowClassificationPolicy.pickPreview(title, allText),
+                rowFingerprint = structureFingerprint(child),
+            )
+        }
         return rows
     }
 
@@ -271,7 +420,8 @@ object AccessibilityTree {
             val label = listOfNotNull(node.text?.toString(), node.contentDescription?.toString()).joinToString(" ").lowercase()
             id.contains("search") || label == "search" || label == "بحث"
         } || (editableNodes.isNotEmpty() && !composerVisible)
-        val groupsFilterVisible = findByViewIdHints(root, DEFAULT_GROUP_ID_HINTS) != null || findByAnyText(root, DEFAULT_GROUP_LABELS) != null
+        val groupsFilterVisible = findByViewIdHints(root, DEFAULT_GROUP_ID_HINTS) != null ||
+            findFilterControl(root, DEFAULT_GROUP_LABELS, DEFAULT_FILTER_PEER_LABELS) != null
         val groupEvidence = filterEvidence(root, DEFAULT_GROUP_LABELS, DEFAULT_GROUP_ID_HINTS)
         val expectedTitleVisible = expectedTitle?.let { exactText(root, it) != null } ?: false
         val rowCount = if (!composerVisible) rowCandidates(root).size else 0

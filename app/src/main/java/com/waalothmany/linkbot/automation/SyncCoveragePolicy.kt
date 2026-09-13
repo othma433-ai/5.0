@@ -9,7 +9,7 @@ enum class SyncCoverageDecision { ACCEPT, SAFETY_STOP }
  */
 object SyncCoveragePolicy {
     fun decide(previousPresent: Int, discovered: Int): SyncCoverageDecision {
-        if (previousPresent <= 0) return SyncCoverageDecision.ACCEPT
+        if (previousPresent <= 0) return if (discovered <= 0) SyncCoverageDecision.SAFETY_STOP else SyncCoverageDecision.ACCEPT
         if (previousPresent < 20) return SyncCoverageDecision.ACCEPT
         if (discovered <= 0) return SyncCoverageDecision.SAFETY_STOP
         val ratio = discovered.toDouble() / previousPresent.toDouble()

@@ -1,0 +1,26 @@
+WA Al-Othmany Link Bot v6.0.0-rc2 verification
+Date: 2026-09-13T18:33:40+00:00
+
+Release audit: PASS
+CoreSmokeSuite: PASS (31 tests)
+ThroughputMeterSmoke: PASS
+Android XML: PASS
+Hardening invariants: PASS
+FeaturePreservationSmoke: PASS
+AccessibilityManifestSmoke: PASS
+Static safety audit: PASS
+
+Manifest service declaration:
+        <service
+            android:name=".automation.WaAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+Known compile-blocker scan:
+1520:    private fun normalizePreview(value: String?): String = value.orEmpty()
+Compose invalid direct weight import: absent
+
+Limitation: Android SDK/Gradle build was not executable in this environment.

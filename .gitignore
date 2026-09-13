@@ -1,22 +1,10 @@
 .gradle/
 .idea/
 local.properties
-.DS_Store
-*.iml
-
-build/
 **/build/
-
-captures/
-.externalNativeBuild/
-.cxx/
-
+*.iml
+release-output/
 *.apk
-*.aab
 
-keystore.properties
-*.jks
-*.keystore
-
-tmp/
-temp/
+__pycache__/
+*.pyc

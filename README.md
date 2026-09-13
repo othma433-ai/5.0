@@ -1,66 +1,71 @@
-# WA Al-Othmany Link Bot v5.2.0-rc1
+# WA Al-Othmany Link Bot v7.2.0-rc1
 
-Standalone Android application for fast WhatsApp group synchronization and durable intelligent link extraction.
+Standalone Android application for WhatsApp group synchronization and durable link extraction using evidence-driven Accessibility automation.
 
-## Core workflow
+## What v7.2 hardens
 
-1. Select a detected WhatsApp instance.
-2. Run **Sync Groups**. The bot activates WhatsApp's Groups filter and scans conversation RecyclerViews in batches without opening every group.
-3. Select All / Unread / Read / Active / Never Scanned / Failed groups.
-4. Run **New**, **Unread**, or **Deep** extraction.
-5. The v5 smart queue prioritizes high-value groups without dropping any user selection.
-6. Every viewport containing new links is committed to Room before the bot is allowed to scroll away.
-7. Pause/resume/skip/stop at any time; safe transient failures can be retried while identity/safety failures remain protected for review.
-8. Export XLSX/CSV/TXT/JSON or import a WhatsApp Export Chat TXT/ZIP.
+- Generation-tokened atomic operation admission prevents Sync / Extract / Retry Failed / recovery from overlapping or reviving stale startup work after Stop/restart.
+- Navigation fallback probes are performance-aware and bounded for FAST / BALANCED / SAFE instead of using long fixed polling loops.
+- Existing screen verification, circuit breakers, durable viewport persistence, queue recovery, duplicate-title protection, adaptive timing, and sanitized diagnostics remain active.
+- GitHub CI verifies the source, runs Android unit tests and lint, builds an installable APK, and publishes artifacts.
+- Tag workflow `v7.2.0-rc1` can create a GitHub Release containing the APK and SHA-256 file after all verification gates pass.
 
-## v5 durable-execution architecture
+## Preserved features
 
-v5 keeps all v4 adaptive-intelligence controls and adds:
+- Fast group synchronization with Groups-filter, Select-All, and conservative All-Chats fallback strategies.
+- DEEP / NEW_ONLY / UNREAD_ONLY extraction.
+- Select All / Unread / Read / Active / Never Scanned / Failed filters.
+- Pause / Resume / Stop / Skip / Retry Failed.
+- TXT/ZIP WhatsApp chat import.
+- XLSX / CSV / TXT / JSON export.
+- Durable Room registry, sessions, queue, links, occurrences, and checkpoints.
+- Optional overlay and foreground notification controls.
+- Official WhatsApp / WhatsApp Business plus launcher-visible compatible package detection.
+- Core runtime does not require Root or Shizuku.
 
-- `SmartQueuePolicy`: deterministic mode-aware ordering for large extraction queues.
-- `DurableViewportPolicy`: persistence-before-advance safety invariant.
-- `FailureRecoveryPolicy`: distinguishes transient retries from ambiguous/unsafe failures.
-- `QueueProgressPolicy`: accurate recovered-session and completed-with-errors reporting.
-- Bounded `viewportCommitInFlight` barrier so repeated Accessibility events cannot scroll ahead of pending persistence.
-- Fresh screen verification immediately before each post-commit scroll.
-- Process-death resume restores already-completed queue progress instead of restarting the UI counter at zero.
-- Extraction completion records `COMPLETED_WITH_ERRORS` when failed groups remain instead of falsely reporting an all-clear session.
+## Verification
 
-Inherited v4 controls include semantic screen evidence, conversation/message container role scoring, adaptive timing, runtime health governor, stage circuit breaker, sync coverage safety stop, duplicate-title protection, persistent checkpoints, end-of-list proof, and throughput telemetry.
-
-## Link engine
-
-The engine reads text, content descriptions, and Android `URLSpan` targets exposed through Accessibility without opening links. It normalizes URLs, removes common tracking parameters while preserving functional parameters, classifies link types, collapses canonical duplicates, and records distinct occurrences.
-
-Categories include WhatsApp groups/channels, Telegram, Google Drive, OneDrive, Dropbox, MEGA, YouTube, TikTok, Instagram, Facebook, X/Twitter, meetings, documents, websites, and Other.
-
-## Privacy
-
-- Full message-text storage is OFF by default.
-- Android backup is disabled.
-- `QUERY_ALL_PACKAGES` is not requested.
-- Diagnostic export is sanitized and excludes complete message text/full URLs.
-- Root and Shizuku are optional; core automation does not require them.
-
-## Build and verification
-
-Use Android Studio/JDK 17 with Android SDK 35, or the included GitHub Actions workflow.
-
-CI runs:
-
-```text
-release audit
-:app:testDebugUnitTest
-:app:lintDebug
-:app:assembleDebug
-```
-
-Local non-Android verification:
+Fast local verification that does not require Android SDK:
 
 ```bash
-bash tools/release-audit.sh
+TERM=xterm bash tools/release-audit.sh
 ```
 
-## Physical-device certification
+The v7.2 source currently contains 39 pure-Kotlin smoke checks plus XML, feature-preservation, manifest, gesture, v7.1 regression, and v7.2 runtime-integration audits.
 
-WhatsApp does not expose a public automation API for this workflow, and Accessibility layouts can change across WhatsApp/OEM/profile versions. `v5.0.0-rc1` therefore remains a release candidate until the exact target device and WhatsApp build pass the real-device gates in `PROJECT_STATUS.md`.
+Full Android build on a machine with JDK 17 and Android SDK 35:
+
+```bash
+bash tools/build-release-candidate.sh
+```
+
+The command performs release audit, Android unit tests, lint, APK build, and SHA-256 generation.
+
+## GitHub build
+
+Upload the repository to GitHub and keep GitHub Actions enabled. The workflow `.github/workflows/build-android-apk.yml` runs on `main`, pull requests, or manual dispatch and uploads the verified APK artifact.
+
+To create a GitHub Release after `main` is green:
+
+```bash
+git tag v7.2.0-rc1
+git push origin v7.2.0-rc1
+```
+
+The tag must exactly match `versionName`; otherwise the release workflow fails closed.
+
+## Gradle wrapper bootstrap
+
+The repository contains wrapper scripts and pinned Gradle 8.9 metadata. If `gradle/wrapper/gradle-wrapper.jar` is absent, `tools/bootstrap-gradle-wrapper.sh` downloads the official Gradle 8.9 wrapper JAR and verifies SHA-256 before use. The Gradle 8.9 distribution itself is also pinned with SHA-256 in `gradle-wrapper.properties`.
+
+## Security and privacy
+
+- Android backup disabled.
+- No `QUERY_ALL_PACKAGES` permission.
+- Full message-text storage is OFF by default.
+- Diagnostics are sanitized and do not intentionally store complete message bodies/full URLs.
+- Gesture fallback uses only bounds of a semantically resolved Accessibility node; screen/state evidence remains the proof of transition success.
+
+## Physical-device release gate
+
+Static/JVM verification and an Android APK build do not prove compatibility with every WhatsApp/OEM/profile combination. Complete `DEVICE_TEST_v7.2.0-rc1.md` on the target device before treating this RC as production-certified.

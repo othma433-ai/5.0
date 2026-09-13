@@ -13,6 +13,9 @@ interface InstanceDao {
     @Query("SELECT * FROM whatsapp_instances ORDER BY label")
     fun observeAll(): Flow<List<WhatsAppInstanceEntity>>
 
+    @Query("SELECT * FROM whatsapp_instances ORDER BY label")
+    suspend fun all(): List<WhatsAppInstanceEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<WhatsAppInstanceEntity>)
 

@@ -34,6 +34,9 @@ object WhatsAppInstanceDetector {
         }.sortedBy { it.label.lowercase() }
     }
 
+    fun isLaunchable(context: Context, packageName: String): Boolean =
+        context.packageManager.getLaunchIntentForPackage(packageName) != null
+
     fun launch(context: Context, packageName: String): Boolean {
         val intent = context.packageManager.getLaunchIntentForPackage(packageName) ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)

@@ -1,0 +1,42 @@
+WA Al-Othmany Link Bot v7.2.0-rc1 — Verification Record
+=========================================================
+
+Scope verified in this execution environment
+--------------------------------------------
+PASS  Pure-Kotlin core verification suite: 39 smoke-test entry points
+PASS  OperationLease race stress: 100 concurrent admission races inside OperationLeaseSmoke
+PASS  ThroughputMeter smoke
+PASS  Android XML parse: 5 files
+PASS  Production-hardening source invariants
+PASS  Feature-preservation audit
+PASS  Accessibility manifest audit
+PASS  Gesture-click regression audit
+PASS  v7.1 runtime regression audit
+PASS  v7.2 runtime integration audit
+PASS  Static safety audit
+PASS  GitHub Actions YAML parsing (build + release workflows)
+PASS  Shell syntax checks for gradlew/tools scripts
+PASS  Python syntax compilation for tools scripts
+PASS  git diff --check
+PASS  Kotlin parser-level scan of WaAccessibilityService.kt (no syntax-parser errors; Android/app symbols require Android classpath)
+
+Key v7.2 hardening verified
+---------------------------
+- Generation-tokened atomic operation admission for Sync / Extract / Retry Failed / recovery.
+- ABA-safe stale-start rejection after Stop/restart.
+- Stop-safe extraction startup ordering: session persisted before queue.
+- Foreground-service startup failure releases Sync ownership.
+- Performance-aware bounded navigation probes replace legacy fixed 500 ms polling loops.
+- Version metadata: versionCode 72, versionName 7.2.0-rc1.
+- GitHub CI gates: release audit, Android unit tests, lint, assembleDebug, APK SHA-256.
+- Tag release gate requires tag v7.2.0-rc1 to match versionName.
+
+Environment limitation
+----------------------
+The current execution container does not provide Android SDK 35 and its shell network cannot resolve Gradle distribution servers. Therefore :app:testDebugUnitTest, :app:lintDebug, :app:assembleDebug, APK generation, and physical-device runtime testing were NOT claimed as locally completed.
+
+The included GitHub Actions workflows install Android SDK 35, bootstrap the checksum-verified Gradle 8.9 wrapper, run those Android gates, and only then publish the APK artifact / GitHub Release.
+
+Production gate
+---------------
+An APK should be treated as release-candidate output until the GitHub build is green and DEVICE_TEST_v7.2.0-rc1.md is completed on the target Android/WhatsApp environments.

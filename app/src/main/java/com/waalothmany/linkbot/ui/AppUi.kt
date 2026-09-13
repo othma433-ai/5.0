@@ -53,6 +53,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.waalothmany.linkbot.BuildConfig
 import com.waalothmany.linkbot.MainViewModel
 import com.waalothmany.linkbot.automation.AutomationMode
 import com.waalothmany.linkbot.automation.PerformanceMode
@@ -127,7 +128,7 @@ private fun HomeScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text("WA Al-Othmany Link Bot", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("v4 • مزامنة تكيفية • استخراج ذكي", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("v${BuildConfig.VERSION_NAME} • Verified Runtime • مزامنة واستخراج", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 StatusPill(runtime.phase.name)
             }
@@ -137,19 +138,31 @@ private fun HomeScreen(
                 Text("حالة التشغيل", fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 StatusLine("جاهزية المحرك", readiness.coreReady)
-                StatusLine("إمكانية الوصول", caps.accessibility)
+                StatusLine("الوصول مفعّل في النظام", caps.accessibilityEnabled)
+                StatusLine("خدمة الوصول متصلة فعليًا", caps.accessibilityConnected)
                 StatusLine("الإشعارات", caps.notifications)
                 StatusLine("الزر العائم (اختياري)", caps.overlay)
-                Text("الوضع: ${readiness.executionMode}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                readiness.blockers.take(2).forEach { blocker ->
+                Text("وضع التنفيذ: ${readiness.executionMode}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (caps.shizukuInstalled) {
+                    Text("Shizuku: التطبيق موجود، لكن المحرك المميز غير مفعّل في نسخة الإنقاذ الحالية.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (caps.rootAvailable) {
+                    Text("Root: تم اكتشاف الملف التنفيذي فقط؛ التشغيل المميز غير مفعّل تلقائيًا.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                readiness.blockers.take(3).forEach { blocker ->
                     Text("• $blocker", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
-                if (!caps.accessibility || !caps.overlay) {
+                if (!caps.accessibilityEnabled || !caps.accessibilityConnected || !caps.overlay) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (!caps.accessibility) OutlinedButton(onClick = onOpenAccessibility) { Text("تفعيل الوصول") }
+                        if (!caps.accessibilityEnabled) {
+                            OutlinedButton(onClick = onOpenAccessibility) { Text("تفعيل الوصول") }
+                        } else if (!caps.accessibilityConnected) {
+                            OutlinedButton(onClick = onOpenAccessibility) { Text("إعادة ربط خدمة الوصول") }
+                        }
                         if (!caps.overlay) OutlinedButton(onClick = onOpenOverlay) { Text("السماح بالزر") }
                     }
                 }
+                OutlinedButton(onClick = vm::refreshEnvironment, modifier = Modifier.fillMaxWidth()) { Text("إعادة فحص حالة النظام ونسخ واتساب") }
             }
         }
         item {
@@ -344,11 +357,13 @@ private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, o
         item {
             CompactCard {
                 Text("القدرات", fontWeight = FontWeight.SemiBold)
-                StatusLine("إمكانية الوصول", caps.accessibility)
+                StatusLine("الوصول مفعّل في النظام", caps.accessibilityEnabled)
+                StatusLine("خدمة الوصول متصلة", caps.accessibilityConnected)
                 StatusLine("الزر العائم", caps.overlay)
                 StatusLine("الإشعارات", caps.notifications)
-                StatusLine("Shizuku موجود", caps.shizukuInstalled)
-                StatusLine("Root متاح", caps.rootAvailable)
+                StatusLine("تطبيق Shizuku موجود", caps.shizukuInstalled)
+                StatusLine("ملف Root موجود", caps.rootAvailable)
+                Text("Shizuku/Root لا يُعتبران وضع تشغيل نشطًا في نسخة الإنقاذ حتى ينجح محرك مميز فعلي واختبار جهاز.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onOpenAccessibility) { Text("إمكانية الوصول") }
                     OutlinedButton(onClick = onOpenOverlay) { Text("الزر العائم") }
@@ -364,11 +379,15 @@ private fun InstanceSelector(instances: List<com.waalothmany.linkbot.data.WhatsA
     val selected = instances.firstOrNull { it.id == selectedId }
     Box {
         OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-            Text(selected?.let { "${it.label} • ${it.kind}" } ?: "لم يتم اكتشاف واتساب", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(selected?.let { "${it.label} • ${it.kind}${if (it.enabled) "" else " • غير متاح"}" } ?: "لم يتم اكتشاف واتساب متاح", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             instances.forEach { item ->
-                DropdownMenuItem(text = { Text("${item.label} (${item.packageName})") }, onClick = { expanded = false; onSelect(item.id) })
+                DropdownMenuItem(
+                    text = { Text("${item.label} (${item.packageName})${if (item.enabled) "" else " • غير متاح في الملف الحالي"}") },
+                    enabled = item.enabled,
+                    onClick = { expanded = false; onSelect(item.id) },
+                )
             }
         }
     }

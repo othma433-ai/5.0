@@ -8,7 +8,7 @@ object RowClassificationPolicy {
     private val systemLabels = setOf(
         "search", "بحث",
         "new chat", "دردشة جديدة",
-        "archived", "المؤرشفة",
+        "archived", "المؤرشفة", "مؤرشفة",
         "communities", "المجتمعات",
         "settings", "الإعدادات",
         "calls", "المكالمات",
@@ -24,6 +24,8 @@ object RowClassificationPolicy {
         "new community", "مجتمع جديد",
         "channels", "القنوات",
         "broadcast lists", "قوائم البث",
+        "tools", "الأدوات",
+        "meta ai", "ask meta ai", "اسأل meta ai",
     )
 
     private val rowIdHints = listOf(

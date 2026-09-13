@@ -1,10 +1,11 @@
 package com.waalothmany.linkbot.capability
 
 data class CapabilityFlags(
-    val accessibility: Boolean,
+    val accessibilityEnabled: Boolean,
+    val accessibilityConnected: Boolean,
     val overlay: Boolean,
     val notifications: Boolean,
-    val shizukuAvailable: Boolean,
+    val shizukuInstalled: Boolean,
     val rootDetected: Boolean,
 )
 
@@ -19,29 +20,32 @@ object ReadinessEvaluator {
     fun evaluate(
         flags: CapabilityFlags,
         whatsappInstances: Int,
-        accessibilityServiceConnected: Boolean,
     ): ReadinessReport {
         val blockers = buildList {
-            if (!flags.accessibility) add("Accessibility disabled")
-            if (!flags.notifications) add("Notifications disabled")
+            if (!flags.accessibilityEnabled) {
+                add("Accessibility disabled")
+            } else if (!flags.accessibilityConnected) {
+                add("Accessibility service not connected")
+            }
             if (whatsappInstances <= 0) add("No WhatsApp instance detected")
-            if (flags.accessibility && !accessibilityServiceConnected) add("Accessibility service not connected")
         }
+
         val notes = buildList {
+            if (!flags.notifications) add("Notifications recommended")
             if (!flags.overlay) add("Overlay optional")
-            if (flags.shizukuAvailable) add("Shizuku detected; optional adapter available when configured")
-            if (flags.rootDetected) add("Root binary detected; privileged mode remains opt-in")
+            if (flags.shizukuInstalled) {
+                add("Shizuku app detected; privileged adapter not active")
+            }
+            if (flags.rootDetected) {
+                add("Root binary detected; privileged adapter not active")
+            }
         }
-        val mode = when {
-            flags.rootDetected -> "STANDARD + ROOT OPTIONAL"
-            flags.shizukuAvailable -> "STANDARD + SHIZUKU OPTIONAL"
-            else -> "STANDARD"
-        }
+
         return ReadinessReport(
             coreReady = blockers.isEmpty(),
             blockers = blockers,
             notes = notes,
-            executionMode = mode,
+            executionMode = "STANDARD",
         )
     }
 }
