@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-
-# WA_FORCE_JDK17_V2
-if [ -x "/usr/lib/jvm/java-17-openjdk-amd64/bin/java" ]; then
-  export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-  export PATH="${JAVA_HOME}/bin:${PATH}"
-fi
-
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${TMPDIR:-/tmp}/wa-link-bot-verify"
@@ -74,21 +67,15 @@ kotlinc \
 
 java -cp "$OUT/core.jar" com.waalothmany.linkbot.tools.CoreSmokeSuite
 
-# Runtime verification boundary:
-# Only pure-Kotlin utilities are compiled here.
-#
-# BotRuntime depends on kotlinx.coroutines and MUST be compiled/tested
-# by Gradle using the exact app dependency graph. Never use the
-# coroutine jar bundled inside a Kotlin compiler distribution.
-
-kotlinc \
+KOTLIN_LIB="$(cd "$(dirname "$(command -v kotlinc)")/../lib" && pwd)"
+kotlinc -cp "$KOTLIN_LIB/kotlinx-coroutines-core-jvm.jar" \
+  app/src/main/java/com/waalothmany/linkbot/runtime/BotRuntime.kt \
   app/src/main/java/com/waalothmany/linkbot/runtime/ThroughputMeter.kt \
+  tools/jvmtests/RuntimeControlSmoke.kt \
   tools/jvmtests/ThroughputMeterSmoke.kt \
-  -include-runtime \
-  -d "$OUT/runtime.jar"
-
-java -cp "$OUT/runtime.jar" \
-  com.waalothmany.linkbot.runtime.ThroughputMeterSmokeKt
+  -include-runtime -d "$OUT/runtime.jar"
+java -cp "$OUT/runtime.jar:$KOTLIN_LIB/kotlinx-coroutines-core-jvm.jar" com.waalothmany.linkbot.runtime.RuntimeControlSmokeKt
+java -cp "$OUT/runtime.jar:$KOTLIN_LIB/kotlinx-coroutines-core-jvm.jar" com.waalothmany.linkbot.runtime.ThroughputMeterSmokeKt
 
 echo "[2/3] Android XML parse"
 python - <<'PY'
@@ -111,7 +98,7 @@ echo "[3/3] Production-hardening source invariants"
 python - <<'PY'
 from pathlib import Path
 checks = {
-  'app/build.gradle.kts': ['versionCode = 51', 'versionName = "5.1.0-rc1"'],
+  'app/build.gradle.kts': ['versionCode = 52', 'versionName = "5.2.0-rc1"'],
   'app/src/main/AndroidManifest.xml': ['android:allowBackup="false"', 'WaAccessibilityService', 'BotForegroundService', 'OverlayControllerService'],
   'app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityTree.kt': ['URLSpan', 'getSpans', 'screenEvidence', 'messageViewport', 'bestConversationScrollable', 'bestMessageScrollable'],
   'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt': [
@@ -120,7 +107,7 @@ checks = {
   'app/src/main/java/com/waalothmany/linkbot/data/AppDatabase.kt': ['version = 2', 'MIGRATION_1_2'],
   'app/src/main/java/com/waalothmany/linkbot/data/Repositories.kt': ['withTransaction', 'recordBatch', 'selected(instanceId: String)'],
   'app/src/main/java/com/waalothmany/linkbot/runtime/DiagnosticLog.kt': ['DiagnosticSanitizer', 'runtime.log'],
-  '.github/workflows/build-android-apk.yml': [':app:testDebugUnitTest', ':app:assembleDebug', 'upload-artifact'],
+  '.github/workflows/android-ci.yml': [':app:testDebugUnitTest', ':app:assembleDebug', 'upload-artifact'],
 }
 for name, needles in checks.items():
     text = Path(name).read_text()

@@ -46,49 +46,6 @@ object AccessibilityTree {
         }
     }
 
-    /**
-     * Finds a UI control by semantic label rather than strict text equality.
-     *
-     * This specifically handles WhatsApp badge suffixes such as
-     * "Groups 3" / "المجموعات ٣".
-     *
-     * Matching remains strict after badge normalization: arbitrary prefixes
-     * are NOT accepted, preventing a group title such as
-     * "المجموعات الطبية" from being mistaken for the Groups filter.
-     */
-    fun findByControlLabel(
-        root: AccessibilityNodeInfo?,
-        labels: Collection<String>,
-    ): AccessibilityNodeInfo? {
-        val candidates = flatten(root).filter { node ->
-            listOfNotNull(
-                node.text?.toString(),
-                node.contentDescription?.toString(),
-            ).any { value ->
-                ControlLabelPolicy.matches(value, labels)
-            }
-        }
-
-        return candidates.maxByOrNull { node ->
-            val id = node.viewIdResourceName.orEmpty().lowercase()
-
-            var score = 0
-
-            if (
-                id.contains("filter") ||
-                id.contains("tab") ||
-                id.contains("navigation")
-            ) score += 12
-
-            if (node.isSelected || node.isChecked) score += 8
-            if (node.isCheckable) score += 6
-            if (node.isClickable) score += 4
-            if (node.parent?.isClickable == true) score += 2
-
-            score
-        }
-    }
-
     fun findByViewIdHints(root: AccessibilityNodeInfo?, hints: Collection<String>): AccessibilityNodeInfo? {
         val lowered = hints.map { it.lowercase() }
         return flatten(root).firstOrNull { node ->
@@ -98,7 +55,7 @@ object AccessibilityTree {
     }
 
     fun filterEvidence(root: AccessibilityNodeInfo?, labels: Collection<String>, idHints: Collection<String>): FilterEvidence {
-        val node = findByViewIdHints(root, idHints) ?: findByControlLabel(root, labels) ?: return FilterEvidence.UNKNOWN
+        val node = findByViewIdHints(root, idHints) ?: findByAnyText(root, labels) ?: return FilterEvidence.UNKNOWN
         val chain = generateSequence(node as AccessibilityNodeInfo?) { it.parent }.take(4).toList()
         if (chain.any { it.isSelected || it.isChecked }) return FilterEvidence.ACTIVE
 
@@ -314,7 +271,7 @@ object AccessibilityTree {
             val label = listOfNotNull(node.text?.toString(), node.contentDescription?.toString()).joinToString(" ").lowercase()
             id.contains("search") || label == "search" || label == "بحث"
         } || (editableNodes.isNotEmpty() && !composerVisible)
-        val groupsFilterVisible = findByViewIdHints(root, DEFAULT_GROUP_ID_HINTS) != null || findByControlLabel(root, DEFAULT_GROUP_LABELS) != null
+        val groupsFilterVisible = findByViewIdHints(root, DEFAULT_GROUP_ID_HINTS) != null || findByAnyText(root, DEFAULT_GROUP_LABELS) != null
         val groupEvidence = filterEvidence(root, DEFAULT_GROUP_LABELS, DEFAULT_GROUP_ID_HINTS)
         val expectedTitleVisible = expectedTitle?.let { exactText(root, it) != null } ?: false
         val rowCount = if (!composerVisible) rowCandidates(root).size else 0

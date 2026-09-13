@@ -1,4 +1,4 @@
-# WA Al-Othmany Link Bot v5.0.0-rc1
+# WA Al-Othmany Link Bot v5.2.0-rc1
 
 Standalone Android application for fast WhatsApp group synchronization and durable intelligent link extraction.
 

@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-
-# WA_FORCE_JDK17_V2
-if [ -x "/usr/lib/jvm/java-17-openjdk-amd64/bin/java" ]; then
-  export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
-  export PATH="${JAVA_HOME}/bin:${PATH}"
-fi
-
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -21,8 +14,8 @@ manifest=(root/'app/src/main/AndroidManifest.xml').read_text()
 build=(root/'app/build.gradle.kts').read_text()
 service=(root/'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt').read_text()
 ui=(root/'app/src/main/java/com/waalothmany/linkbot/ui/AppUi.kt').read_text()
-assert 'versionName = "5.1.0-rc1"' in build
-assert 'versionCode = 51' in build
+assert 'versionName = "5.2.0-rc1"' in build
+assert 'versionCode = 52' in build
 assert 'QUERY_ALL_PACKAGES' not in manifest
 assert 'android:allowBackup="false"' in manifest
 assert 'AdaptiveTimingPolicy' in service

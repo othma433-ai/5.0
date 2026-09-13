@@ -31,7 +31,7 @@ data class RuntimeSnapshot(
 )
 
 object BotRuntime {
-    private val mutable: MutableStateFlow<RuntimeSnapshot> = MutableStateFlow(RuntimeSnapshot())
+    private val mutable = MutableStateFlow(RuntimeSnapshot())
     val state: StateFlow<RuntimeSnapshot> = mutable.asStateFlow()
 
     @Volatile private var phaseBeforePause: RuntimePhase = RuntimePhase.READY
