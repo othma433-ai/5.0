@@ -111,7 +111,7 @@ echo "[3/3] Production-hardening source invariants"
 python - <<'PY'
 from pathlib import Path
 checks = {
-  'app/build.gradle.kts': ['versionCode = 50', 'versionName = "5.0.0-rc1"'],
+  'app/build.gradle.kts': ['versionCode = 51', 'versionName = "5.1.0-rc1"'],
   'app/src/main/AndroidManifest.xml': ['android:allowBackup="false"', 'WaAccessibilityService', 'BotForegroundService', 'OverlayControllerService'],
   'app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityTree.kt': ['URLSpan', 'getSpans', 'screenEvidence', 'messageViewport', 'bestConversationScrollable', 'bestMessageScrollable'],
   'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt': [

@@ -21,8 +21,8 @@ manifest=(root/'app/src/main/AndroidManifest.xml').read_text()
 build=(root/'app/build.gradle.kts').read_text()
 service=(root/'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt').read_text()
 ui=(root/'app/src/main/java/com/waalothmany/linkbot/ui/AppUi.kt').read_text()
-assert 'versionName = "5.0.0-rc1"' in build
-assert 'versionCode = 50' in build
+assert 'versionName = "5.1.0-rc1"' in build
+assert 'versionCode = 51' in build
 assert 'QUERY_ALL_PACKAGES' not in manifest
 assert 'android:allowBackup="false"' in manifest
 assert 'AdaptiveTimingPolicy' in service

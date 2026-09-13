@@ -13,8 +13,8 @@ android {
         applicationId = "com.waalothmany.linkbot"
         minSdk = 26
         targetSdk = 35
-        versionCode = 50
-        versionName = "5.0.0-rc1"
+        versionCode = 51
+        versionName = "5.1.0-rc1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

@@ -42,6 +42,8 @@ class WaAccessibilityService : AccessibilityService() {
     private var syncEndGuard = EndOfListGuard()
     private var syncRequestedFingerprint: String? = null
     private var syncProbeJob: Job? = null
+    private var syncOpeningProbeJob: Job? = null
+    private var syncOpeningMisses: Int = 0
     private var filterVerifyAttempts: Int = 0
     private var extractionSessionId: String? = null
     private var extractionMode: AutomationMode = AutomationMode.DEEP
@@ -110,6 +112,7 @@ class WaAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         stageWatchdogJob?.cancel()
         syncProbeJob?.cancel()
+        syncOpeningProbeJob?.cancel()
         extractionProbeJob?.cancel()
         scope.cancel()
         if (instance === this) instance = null
@@ -262,9 +265,18 @@ class WaAccessibilityService : AccessibilityService() {
         syncRequestedFingerprint = null
         syncProbeJob?.cancel()
         syncProbeJob = null
+        syncOpeningProbeJob?.cancel()
+        syncOpeningProbeJob = null
+        syncOpeningMisses = 0
         filterVerifyAttempts = 0
         BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING, "Preparing sync", "Loading local group identities"))
-        DiagnosticLog.record("SYNC_START", mapOf("instance" to instanceId.take(12)))
+        DiagnosticLog.record(
+            "SYNC_START",
+            mapOf(
+                "instance" to instanceId.take(12),
+                "package" to packageName,
+            )
+        )
         startRuntimeService("Group sync")
         scope.launch {
             syncExistingGroups = ServiceLocator.database.groupDao().byInstance(instanceId)
@@ -340,20 +352,103 @@ class WaAccessibilityService : AccessibilityService() {
         val op = operation as? Operation.Sync ?: return
         when (op.stage) {
             SyncStage.OPENING -> {
-                val groups = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-                    ?: AccessibilityTree.findByAnyText(root, GROUP_LABELS)
-                if (groups != null && AccessibilityTree.click(groups)) {
+                val groups =
+                    AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
+                        ?: AccessibilityTree.findByControlLabel(
+                            root,
+                            GROUP_LABELS,
+                        )
+
+                if (
+                    groups != null &&
+                    AccessibilityTree.click(groups)
+                ) {
+                    syncOpeningMisses = 0
                     recordStageSuccess("SYNC_OPENING")
                     filterVerifyAttempts = 0
+
+                    DiagnosticLog.record(
+                        "SYNC_GROUP_FILTER_CLICKED",
+                        mapOf(
+                            "package" to targetPackage.orEmpty(),
+                        )
+                    )
+
                     setSyncStage(SyncStage.VERIFY_FILTER)
-                    BotRuntime.update(BotRuntime.state.value.copy(title = "Groups filter", detail = "Verifying active filter"))
+
+                    BotRuntime.update(
+                        BotRuntime.state.value.copy(
+                            title = "Groups filter",
+                            detail = "Verifying active filter",
+                        )
+                    )
+
                     scheduleFilterVerificationProbe()
                 } else {
-                    // If WhatsApp was last left inside a chat or another tab, return to Chats first.
-                    val chats = AccessibilityTree.findByViewIdHints(root, CHAT_ID_HINTS)
-                        ?: AccessibilityTree.findByAnyText(root, CHAT_LABELS)
-                    if (chats != null) AccessibilityTree.click(chats)
-                    else performGlobalAction(GLOBAL_ACTION_BACK)
+                    syncOpeningMisses++
+
+                    val chats =
+                        AccessibilityTree.findByViewIdHints(
+                            root,
+                            CHAT_ID_HINTS,
+                        )
+                            ?: AccessibilityTree.findByControlLabel(
+                                root,
+                                CHAT_LABELS,
+                            )
+
+                    val screen =
+                        AccessibilityTree.screenEvidence(root)
+
+                    if (
+                        syncOpeningMisses == 1 ||
+                        syncOpeningMisses % 4 == 0
+                    ) {
+                        DiagnosticLog.record(
+                            "SYNC_OPENING_EVIDENCE",
+                            mapOf(
+                                "miss" to syncOpeningMisses,
+                                "screen" to screen.kind.name,
+                                "confidence" to screen.confidence,
+                                "groupsFound" to (groups != null),
+                                "chatsFound" to (chats != null),
+                                "package" to
+                                    root.packageName
+                                        ?.toString()
+                                        .orEmpty(),
+                            )
+                        )
+                    }
+
+                    when {
+                        /*
+                         * If we are definitely inside a conversation,
+                         * one controlled Back is justified.
+                         *
+                         * Never spam GLOBAL_ACTION_BACK while the screen
+                         * identity is unknown.
+                         */
+                        screen.kind == ScreenKind.CHAT &&
+                            screen.confidence >= 60 -> {
+                            performGlobalAction(
+                                GLOBAL_ACTION_BACK
+                            )
+                        }
+
+                        /*
+                         * If another bottom tab is active, Chats is a
+                         * safe deterministic anchor.
+                         */
+                        chats != null -> {
+                            AccessibilityTree.click(chats)
+                        }
+
+                        /*
+                         * UNKNOWN: do nothing. The active probe below
+                         * will inspect a fresh root shortly.
+                         */
+                        else -> Unit
+                    }
                 }
             }
             SyncStage.VERIFY_FILTER -> verifyGroupFilter(root)
@@ -381,7 +476,7 @@ class WaAccessibilityService : AccessibilityService() {
             FilterDecision.RETRY -> {
                 if (evidence == FilterEvidence.INACTIVE) {
                     val groups = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-                        ?: AccessibilityTree.findByAnyText(root, GROUP_LABELS)
+                        ?: AccessibilityTree.findByControlLabel(root, GROUP_LABELS)
                     AccessibilityTree.click(groups)
                 }
                 scheduleFilterVerificationProbe()
@@ -392,6 +487,58 @@ class WaAccessibilityService : AccessibilityService() {
                 clearOperation()
                 BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Group filter not verified", "WhatsApp did not expose reliable selected-state evidence; refusing unsafe synchronization"))
                 stopRuntimeService()
+            }
+        }
+    }
+
+    /**
+     * OPENING cannot rely exclusively on Accessibility events.
+     *
+     * startActivity() may resume an already-existing WhatsApp task without
+     * producing a useful event for our service. Probe rootInActiveWindow
+     * periodically until the Groups filter is found or the watchdog
+     * terminates the stage.
+     */
+    private fun scheduleSyncOpeningProbe() {
+        syncOpeningProbeJob?.cancel()
+
+        syncOpeningProbeJob = scope.launch {
+            delay(300)
+
+            repeat(18) {
+                val current =
+                    operation as? Operation.Sync
+                        ?: return@launch
+
+                if (
+                    current.stage != SyncStage.OPENING ||
+                    BotRuntime.pauseRequested ||
+                    BotRuntime.stopRequested
+                ) return@launch
+
+                val root = rootInActiveWindow
+
+                if (
+                    root != null &&
+                    root.packageName?.toString() ==
+                        targetPackage
+                ) {
+                    handleSync(
+                        root,
+                        AccessibilityEvent
+                            .TYPE_WINDOW_CONTENT_CHANGED,
+                    )
+
+                    val after =
+                        operation as? Operation.Sync
+
+                    if (
+                        after == null ||
+                        after.stage != SyncStage.OPENING
+                    ) return@launch
+                }
+
+                delay(550)
             }
         }
     }
@@ -595,9 +742,9 @@ class WaAccessibilityService : AccessibilityService() {
         val evidence = AccessibilityTree.screenEvidence(root)
         val listReady = evidence.kind == ScreenKind.GROUP_LIST && evidence.confidence >= 60
         val groupsFilter = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-            ?: AccessibilityTree.findByAnyText(root, GROUP_LABELS)
+            ?: AccessibilityTree.findByControlLabel(root, GROUP_LABELS)
         val chats = AccessibilityTree.findByViewIdHints(root, CHAT_ID_HINTS)
-            ?: AccessibilityTree.findByAnyText(root, CHAT_LABELS)
+            ?: AccessibilityTree.findByControlLabel(root, CHAT_LABELS)
         if (listReady || groupsFilter != null || chats != null) {
             recordStageSuccess("EXTRACT_RETURNING")
             setExtractStage(ExtractStage.PREPARE_LIST)
@@ -651,7 +798,7 @@ class WaAccessibilityService : AccessibilityService() {
 
     private fun activateGroupFilter(root: AccessibilityNodeInfo) {
         val node = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-            ?: AccessibilityTree.findByAnyText(root, GROUP_LABELS)
+            ?: AccessibilityTree.findByControlLabel(root, GROUP_LABELS)
         if (node != null && AccessibilityTree.click(node)) {
             recordStageSuccess("EXTRACT_ACTIVATE_GROUP_FILTER")
             setExtractStage(ExtractStage.OPEN_SEARCH)
@@ -978,6 +1125,14 @@ class WaAccessibilityService : AccessibilityService() {
 
     private fun setSyncStage(stage: SyncStage) {
         operation = Operation.Sync(stage)
+
+        if (stage == SyncStage.OPENING) {
+            scheduleSyncOpeningProbe()
+        } else {
+            syncOpeningProbeJob?.cancel()
+            syncOpeningProbeJob = null
+        }
+
         armCurrentStageWatchdog()
     }
 
@@ -989,6 +1144,8 @@ class WaAccessibilityService : AccessibilityService() {
     private fun clearOperation() {
         operation = Operation.None
         viewportCommitInFlight.set(false)
+        syncOpeningProbeJob?.cancel()
+        syncOpeningProbeJob = null
         stageWatchdogJob?.cancel()
         stageWatchdogJob = null
     }
