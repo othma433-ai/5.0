@@ -1145,6 +1145,20 @@ class WaAccessibilityService : AccessibilityService() {
         return matches
     }
 
+    /**
+     * Canonicalizes WhatsApp preview text before it participates in
+     * viewport/group identity signatures.
+     *
+     * Directionality marks are presentation-only and must never make the
+     * same preview appear as a different row identity.
+     */
+    private fun normalizePreview(value: String?): String = value.orEmpty()
+        .replace('\u200f'.toString(), "")
+        .replace('\u200e'.toString(), "")
+        .trim()
+        .lowercase()
+        .replace(Regex("\\s+"), " ")
+
     private fun normalizeTitle(value: String) = value.trim().replace(Regex("\\s+"), " ").lowercase()
     private fun stableHash(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }
