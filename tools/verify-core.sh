@@ -67,15 +67,34 @@ kotlinc \
 
 java -cp "$OUT/core.jar" com.waalothmany.linkbot.tools.CoreSmokeSuite
 
-KOTLIN_LIB="$(cd "$(dirname "$(command -v kotlinc)")/../lib" && pwd)"
-kotlinc -cp "$KOTLIN_LIB/kotlinx-coroutines-core-jvm.jar" \
-  app/src/main/java/com/waalothmany/linkbot/runtime/BotRuntime.kt \
+
+# ------------------------------------------------------------
+# Runtime verification boundary
+# ------------------------------------------------------------
+#
+# BotRuntime depends on kotlinx.coroutines / StateFlow.
+#
+# It MUST NOT be compiled here with the standalone Kotlin CLI,
+# because that environment is not the Android application's real
+# dependency graph.
+#
+# BotRuntime is verified by:
+#
+#   :app:testDebugUnitTest
+#
+# using app/src/test/.../BotRuntimeTest.kt and the exact Gradle
+# dependencies declared by the Android project.
+#
+# Only pure-Kotlin runtime utilities remain in this hermetic smoke test.
+
+timeout 120s kotlinc \
   app/src/main/java/com/waalothmany/linkbot/runtime/ThroughputMeter.kt \
-  tools/jvmtests/RuntimeControlSmoke.kt \
   tools/jvmtests/ThroughputMeterSmoke.kt \
-  -include-runtime -d "$OUT/runtime.jar"
-java -cp "$OUT/runtime.jar:$KOTLIN_LIB/kotlinx-coroutines-core-jvm.jar" com.waalothmany.linkbot.runtime.RuntimeControlSmokeKt
-java -cp "$OUT/runtime.jar:$KOTLIN_LIB/kotlinx-coroutines-core-jvm.jar" com.waalothmany.linkbot.runtime.ThroughputMeterSmokeKt
+  -include-runtime \
+  -d "$OUT/runtime.jar"
+
+java -cp "$OUT/runtime.jar" \
+  com.waalothmany.linkbot.runtime.ThroughputMeterSmokeKt
 
 echo "[2/3] Android XML parse"
 python - <<'PY'
