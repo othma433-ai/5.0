@@ -107,13 +107,56 @@ checks = {
   'app/src/main/java/com/waalothmany/linkbot/data/AppDatabase.kt': ['version = 2', 'MIGRATION_1_2'],
   'app/src/main/java/com/waalothmany/linkbot/data/Repositories.kt': ['withTransaction', 'recordBatch', 'selected(instanceId: String)'],
   'app/src/main/java/com/waalothmany/linkbot/runtime/DiagnosticLog.kt': ['DiagnosticSanitizer', 'runtime.log'],
-  '.github/workflows/android-ci.yml': [':app:testDebugUnitTest', ':app:assembleDebug', 'upload-artifact'],
 }
 for name, needles in checks.items():
     text = Path(name).read_text()
     missing = [n for n in needles if n not in text]
     if missing:
         raise SystemExit(f"{name}: missing {missing}")
+
+# Android CI workflow discovery.
+#
+# Workflow filenames are implementation details and may change.
+# The release gate therefore validates workflow CAPABILITIES rather
+# than a hard-coded path.
+workflow_dir = Path('.github/workflows')
+
+workflow_files = sorted(
+    list(workflow_dir.glob('*.yml')) +
+    list(workflow_dir.glob('*.yaml'))
+)
+
+required_ci_capabilities = (
+    ':app:testDebugUnitTest',
+    ':app:assembleDebug',
+    'upload-artifact',
+)
+
+matching_workflows = []
+
+for workflow_path in workflow_files:
+
+    workflow_text = workflow_path.read_text()
+
+    if all(
+        capability in workflow_text
+        for capability in required_ci_capabilities
+    ):
+        matching_workflows.append(workflow_path)
+
+if not matching_workflows:
+    raise SystemExit(
+        'No Android build workflow provides all required capabilities: '
+        + ', '.join(required_ci_capabilities)
+    )
+
+print(
+    'Android CI workflow: PASS ('
+    + ', '.join(str(p) for p in matching_workflows)
+    + ')'
+)
+
+
 manifest = Path('app/src/main/AndroidManifest.xml').read_text()
 if 'QUERY_ALL_PACKAGES' in manifest:
     raise SystemExit('Manifest must not request QUERY_ALL_PACKAGES')
