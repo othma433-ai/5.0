@@ -1145,6 +1145,25 @@ class WaAccessibilityService : AccessibilityService() {
         return matches
     }
 
+    private fun normalizePreview(value: String?): String = value.orEmpty()
+
+
+        .replace('\u200f'.toString(), "")
+
+
+        .replace('\u200e'.toString(), "")
+
+
+        .trim()
+
+
+        .replace(Regex("\\s+"), " ")
+
+
+        .lowercase()
+
+
+
     private fun normalizeTitle(value: String) = value.trim().replace(Regex("\\s+"), " ").lowercase()
     private fun stableHash(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         .joinToString("") { "%02x".format(it) }
