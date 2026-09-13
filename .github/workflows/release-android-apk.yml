@@ -37,15 +37,17 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
       - name: Bootstrap verified Gradle wrapper
         shell: bash
         run: |
           chmod +x gradlew tools/bootstrap-gradle-wrapper.sh tools/verify-core.sh tools/release-audit.sh
           ./tools/bootstrap-gradle-wrapper.sh
           ./gradlew --version
-
-      - name: Set up Gradle cache
-        uses: gradle/actions/setup-gradle@v4
 
       - name: Validate tag and app version
         shell: bash
