@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WA Al-Othmany Link Bot</string>
+    <string name="accessibility_service_description">Reads supported WhatsApp screens to synchronize groups and extract links selected by the user.</string>
+</resources>

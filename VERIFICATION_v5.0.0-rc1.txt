@@ -1,0 +1,48 @@
+WA Al-Othmany Link Bot v5.0.0-rc1 — Verification Record
+Date: 2026-09-13
+
+Pure Kotlin policy/core smoke suite:
+- LinkEngineSmoke: PASS
+- ExportChatParserSmoke: PASS
+- ExporterSmoke: PASS
+- AutomationPolicySmoke: PASS
+- SearchResolutionSmoke: PASS
+- CheckpointSmoke: PASS
+- PerformanceProfileSmoke: PASS
+- GroupIdentityMatcherSmoke: PASS
+- FilterVerificationPolicySmoke: PASS
+- RowClassificationPolicySmoke: PASS
+- ViewportIdentityPolicySmoke: PASS
+- AdaptiveTimingSmoke: PASS
+- StageCircuitBreakerSmoke: PASS
+- SyncCoveragePolicySmoke: PASS
+- ScreenEvidencePolicySmoke: PASS
+- AutomationHealthPolicySmoke: PASS
+- MessageViewportPolicySmoke: PASS
+- ContainerRolePolicySmoke: PASS
+- SmartQueuePolicySmoke: PASS
+- DurableViewportPolicySmoke: PASS
+- FailureRecoveryPolicySmoke: PASS
+- QueueProgressPolicySmoke: PASS
+- PackageCandidatePolicySmoke: PASS
+- ReadinessEvaluatorSmoke: PASS
+- DiagnosticSanitizerSmoke: PASS
+- CoreSmokeSuite: PASS (25 tests)
+
+Runtime smoke suite:
+- RuntimeControlSmoke: PASS
+- ThroughputMeterSmoke: PASS
+
+Static / source checks:
+- Android XML parse: PASS (5 files)
+- v5 version/privacy/hardening invariants: PASS
+- No QUERY_ALL_PACKAGES: PASS
+- No fixed multi-second Accessibility navigation delays: PASS
+- No TODO/FIXME/NotImplementedError in production Kotlin: PASS
+- GitHub Actions YAML parse: PASS
+- Text/CRLF hygiene: PASS
+
+Important release gate not executed in this container:
+- Android SDK/Gradle compile, lint, testDebugUnitTest, assembleDebug
+- Physical-device WhatsApp Accessibility certification
+These remain CI/device gates before production labeling.
