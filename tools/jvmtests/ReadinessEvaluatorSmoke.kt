@@ -15,7 +15,7 @@ fun main() {
     check(ready.coreReady) { ready.toString() }
     check(ready.blockers.isEmpty()) { ready.toString() }
     check("Overlay optional" in ready.notes)
-    check(ready.executionMode == "STANDARD") { ready.toString() }
+    check(ready.executionMode == "ADAPTIVE_MULTI_ENGINE") { ready.toString() }
 
 
     val notificationsOptional = ReadinessEvaluator.evaluate(
@@ -45,8 +45,8 @@ fun main() {
     )
     check(!enabledButDisconnected.coreReady)
     check(enabledButDisconnected.blockers.contains("Accessibility service not connected"))
-    check(enabledButDisconnected.notes.contains("Shizuku app detected; privileged adapter not active"))
-    check(enabledButDisconnected.executionMode == "STANDARD")
+    check(enabledButDisconnected.notes.contains("Shizuku detected; Binder/permission readiness is verified at runtime"))
+    check(enabledButDisconnected.executionMode == "ADAPTIVE_MULTI_ENGINE")
 
     val disabled = ReadinessEvaluator.evaluate(
         CapabilityFlags(
@@ -63,8 +63,8 @@ fun main() {
     check(disabled.blockers.contains("Accessibility disabled"))
     check("Notifications recommended" in disabled.notes)
     check(disabled.blockers.contains("No WhatsApp instance detected"))
-    check(disabled.notes.contains("Root binary detected; privileged adapter not active"))
-    check(disabled.executionMode == "STANDARD")
+    check(disabled.notes.contains("Root detected; readiness requires an execution probe"))
+    check(disabled.executionMode == "ADAPTIVE_MULTI_ENGINE")
 
     println("ReadinessEvaluatorSmoke: PASS")
 }

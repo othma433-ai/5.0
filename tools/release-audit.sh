@@ -10,6 +10,18 @@ python3 tools/accessibility-manifest-smoke.py
 python3 tools/gesture-click-regression-smoke.py
 python3 tools/v71-runtime-integration-smoke.py
 python3 tools/v72-runtime-integration-smoke.py
+python3 tools/v73-runtime-integration-smoke.py
+python3 tools/shizuku-runtime-smoke.py
+python3 tools/system-engine-integration-smoke.py
+python3 tools/v73-database-smoke.py
+python3 tools/root-engine-smoke.py
+python3 tools/accessibility-runtime-integration-smoke.py
+python3 tools/engine-registry-integration-smoke.py
+python3 tools/orchestrator-workflow-smoke.py
+python3 tools/capability-ui-smoke.py
+python3 tools/structured-trace-integration-smoke.py
+python3 tools/accessibility-event-coalescing-smoke.py
+python3 tools/ci-v73-smoke.py
 
 echo "[release] static safety audit"
 python - <<'PY'
@@ -20,8 +32,25 @@ manifest=(root/'app/src/main/AndroidManifest.xml').read_text()
 build=(root/'app/build.gradle.kts').read_text()
 service=(root/'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt').read_text()
 ui=(root/'app/src/main/java/com/waalothmany/linkbot/ui/AppUi.kt').read_text()
-assert 'versionName = "7.2.0-rc1"' in build
-assert 'versionCode = 72' in build
+assert 'versionName = "7.3.0-rc1"' in build
+assert 'versionCode = 73' in build
+assert 'dev.rikka.shizuku:api:13.1.5' in build
+assert 'dev.rikka.shizuku:provider:13.1.5' in build
+assert 'rikka.shizuku.ShizukuProvider' in manifest
+entities=(root/'app/src/main/java/com/waalothmany/linkbot/data/Entities.kt').read_text()
+database=(root/'app/src/main/java/com/waalothmany/linkbot/data/AppDatabase.kt').read_text()
+registry=(root/'app/src/main/java/com/waalothmany/linkbot/runtime/EngineRegistry.kt').read_text()
+orchestrator=(root/'app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionOrchestrator.kt').read_text()
+capability=(root/'app/src/main/java/com/waalothmany/linkbot/capability/CapabilityManager.kt').read_text()
+assert 'version = 3' in database
+assert 'MIGRATION_2_3' in database
+assert 'Index(value = ["androidUserId", "packageName"], unique = true)' in entities
+assert 'Index(value = ["packageName"], unique = true)' not in entities
+assert 'TraceRecorder' in registry
+assert 'RootEngine' in registry
+assert 'ShizukuEngine' in registry
+assert 'ExecutionPostconditionVerifier' in orchestrator
+assert 'shizukuReady' in capability
 assert 'QUERY_ALL_PACKAGES' not in manifest
 assert 'android:allowBackup="false"' in manifest
 assert 'AdaptiveTimingPolicy' in service

@@ -7,8 +7,10 @@ import com.waalothmany.linkbot.automation.AutomationMode
 import com.waalothmany.linkbot.automation.PerformanceMode
 import com.waalothmany.linkbot.automation.PerformanceProfiles
 import com.waalothmany.linkbot.automation.WaAccessibilityService
-import com.waalothmany.linkbot.capability.AccessibilityConnectionMonitor
+import com.waalothmany.linkbot.runtime.engine.accessibility.AccessibilityRuntimeSupervisor
 import com.waalothmany.linkbot.capability.CapabilityManager
+import com.waalothmany.linkbot.capability.AccessibilityStartDisposition
+import com.waalothmany.linkbot.capability.AccessibilityStartPolicy
 import com.waalothmany.linkbot.capability.OperationStartBlockReason
 import com.waalothmany.linkbot.capability.OperationStartContext
 import com.waalothmany.linkbot.capability.OperationStartGate
@@ -17,6 +19,9 @@ import com.waalothmany.linkbot.data.GroupEntity
 import com.waalothmany.linkbot.data.LinkEntity
 import com.waalothmany.linkbot.data.WhatsAppInstanceEntity
 import com.waalothmany.linkbot.runtime.BotRuntime
+import com.waalothmany.linkbot.runtime.EngineRegistry
+import com.waalothmany.linkbot.runtime.engine.ProbeState
+import com.waalothmany.linkbot.runtime.engine.shizuku.ShizukuRuntime
 import com.waalothmany.linkbot.runtime.DiagnosticLog
 import com.waalothmany.linkbot.runtime.RuntimePhase
 import com.waalothmany.linkbot.runtime.RuntimeSnapshot
@@ -60,6 +65,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _capabilities = MutableStateFlow(CapabilityManager.snapshot(appContext))
     val capabilities = _capabilities.asStateFlow()
+    private val _rootProbeState = MutableStateFlow(ProbeState.UNAVAILABLE)
+    val rootProbeState = _rootProbeState.asStateFlow()
+    private val _rootFallbackEnabled = MutableStateFlow(EngineRegistry.isRootFallbackEnabled(appContext))
+    val rootFallbackEnabled = _rootFallbackEnabled.asStateFlow()
 
     val readiness = combine(_capabilities, instances) { caps, inventory ->
         ReadinessEvaluator.evaluate(
@@ -83,7 +92,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            AccessibilityConnectionMonitor.state.collectLatest { connection ->
+            ShizukuRuntime.state.collectLatest {
+                _capabilities.value = CapabilityManager.snapshot(appContext)
+            }
+        }
+        viewModelScope.launch {
+            AccessibilityRuntimeSupervisor.state.collectLatest { connection ->
                 _capabilities.value = CapabilityManager.snapshot(appContext)
                 if (!connection.connected && BotRuntime.state.value.phase in ACTIVE_PHASES) {
                     BotRuntime.update(
@@ -105,7 +119,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _capabilities.value = CapabilityManager.snapshot(appContext)
         viewModelScope.launch {
             val now = System.currentTimeMillis()
-            val detectedEntities = WhatsAppInstanceDetector.detect(appContext)
+            val standardEntities = WhatsAppInstanceDetector.detect(appContext)
+            val privilegedEntities = runCatching { EngineRegistry.discovery.discover() }
+                .onFailure { error ->
+                    DiagnosticLog.record(
+                        "PRIVILEGED_DISCOVERY_FAILED",
+                        mapOf("error" to error.javaClass.simpleName),
+                    )
+                }
+                .getOrDefault(emptyList())
+            val detectedEntities = LinkedHashMap<Pair<Int, String>, WhatsAppInstanceEntity>().apply {
+                standardEntities.forEach { put(it.androidUserId to it.packageName, it) }
+                privilegedEntities.forEach { put(it.androidUserId to it.packageName, it) }
+            }.values.toList()
             val existingEntities = db.instanceDao().all()
             val merged = InstanceInventoryPolicy.reconcile(
                 existing = existingEntities.map { it.toInventoryItem() },
@@ -131,7 +157,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     "shizukuInstalled" to _capabilities.value.shizukuInstalled,
                 ),
             )
+            refreshPrivilegedEngineState()
         }
+    }
+
+    fun requestShizukuPermission() {
+        val requested = ShizukuRuntime.requestPermission()
+        DiagnosticLog.record("SHIZUKU_PERMISSION_REQUEST", mapOf("requested" to requested))
+        _capabilities.value = CapabilityManager.snapshot(appContext)
+    }
+
+    fun setRootFallbackEnabled(enabled: Boolean) {
+        EngineRegistry.setRootFallbackEnabled(appContext, enabled)
+        _rootFallbackEnabled.value = enabled
+        _capabilities.value = CapabilityManager.snapshot(appContext)
+        viewModelScope.launch { refreshPrivilegedEngineState() }
+    }
+
+    fun retryEngineProbes() {
+        ShizukuRuntime.refresh()
+        viewModelScope.launch { refreshPrivilegedEngineState() }
+    }
+
+    private suspend fun refreshPrivilegedEngineState() {
+        _rootFallbackEnabled.value = EngineRegistry.isRootFallbackEnabled(appContext)
+        _rootProbeState.value = if (_rootFallbackEnabled.value) {
+            runCatching { EngineRegistry.probeRoot().state }.getOrDefault(ProbeState.ERROR)
+        } else {
+            ProbeState.UNAVAILABLE
+        }
+        _capabilities.value = CapabilityManager.snapshot(appContext)
+        DiagnosticLog.record(
+            "ENGINE_READINESS_REFRESHED",
+            mapOf(
+                "shizukuState" to _capabilities.value.shizukuState,
+                "shizukuReady" to _capabilities.value.shizukuReady,
+                "rootEnabled" to _rootFallbackEnabled.value,
+                "rootProbe" to _rootProbeState.value.name,
+            ),
+        )
     }
 
     fun selectInstance(id: String) {
@@ -166,12 +230,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun allowOperationStart(instance: WhatsAppInstanceEntity?): Boolean {
         val fresh = CapabilityManager.snapshot(appContext)
         _capabilities.value = fresh
+
+        when (AccessibilityStartPolicy.evaluate(AccessibilityRuntimeSupervisor.state.value, System.currentTimeMillis())) {
+            AccessibilityStartDisposition.WAIT_FOR_BIND -> {
+                DiagnosticLog.record("OPERATION_START_WAITING_ACCESSIBILITY_BIND")
+                BotRuntime.update(
+                    RuntimeSnapshot(
+                        phase = RuntimePhase.READY,
+                        title = "Connecting Accessibility…",
+                        detail = "Android has enabled the service; waiting for the service binder.",
+                        error = null,
+                    )
+                )
+                return false
+            }
+            AccessibilityStartDisposition.REQUIRE_USER_ACTION -> {
+                rejectStart(
+                    if (!fresh.accessibilityEnabled) OperationStartBlockReason.ACCESSIBILITY_DISABLED
+                    else OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED
+                )
+                return false
+            }
+            AccessibilityStartDisposition.ALLOW -> Unit
+        }
+
         val decision = OperationStartGate.evaluate(
             OperationStartContext(
                 instanceSelected = instance != null,
-                packageLaunchable = instance?.let {
-                    WhatsAppInstanceDetector.isLaunchable(appContext, it.packageName)
-                } == true,
+                packageLaunchable = instance?.reachable == true,
                 accessibilityEnabled = fresh.accessibilityEnabled,
                 accessibilityConnected = fresh.accessibilityConnected,
                 notificationsReady = fresh.notifications,
@@ -243,6 +329,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         kind = kind,
         enabled = enabled,
         lastSeenAt = lastSeenAt,
+        androidUserId = androidUserId,
+        profileType = profileType,
+        profileLabel = profileLabel,
+        launchStrategy = launchStrategy,
+        lastResolvedEngine = lastResolvedEngine,
+        reachable = reachable,
+        lastSuccessfulLaunchAt = lastSuccessfulLaunchAt,
     )
 
     private fun InstanceInventoryItem.toEntity() = WhatsAppInstanceEntity(
@@ -250,6 +343,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         packageName = packageName,
         label = label,
         kind = kind,
+        androidUserId = androidUserId,
+        profileType = profileType,
+        profileLabel = profileLabel,
+        launchStrategy = launchStrategy,
+        lastResolvedEngine = lastResolvedEngine,
+        reachable = reachable,
+        lastSuccessfulLaunchAt = lastSuccessfulLaunchAt,
         enabled = enabled,
         lastSeenAt = lastSeenAt,
     )

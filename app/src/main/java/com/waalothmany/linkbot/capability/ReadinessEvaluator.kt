@@ -34,10 +34,10 @@ object ReadinessEvaluator {
             if (!flags.notifications) add("Notifications recommended")
             if (!flags.overlay) add("Overlay optional")
             if (flags.shizukuInstalled) {
-                add("Shizuku app detected; privileged adapter not active")
+                add("Shizuku detected; Binder/permission readiness is verified at runtime")
             }
             if (flags.rootDetected) {
-                add("Root binary detected; privileged adapter not active")
+                add("Root detected; readiness requires an execution probe")
             }
         }
 
@@ -45,7 +45,7 @@ object ReadinessEvaluator {
             coreReady = blockers.isEmpty(),
             blockers = blockers,
             notes = notes,
-            executionMode = "STANDARD",
+            executionMode = "ADAPTIVE_MULTI_ENGINE",
         )
     }
 }

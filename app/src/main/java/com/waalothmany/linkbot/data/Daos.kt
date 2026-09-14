@@ -22,8 +22,21 @@ interface InstanceDao {
     @Query("SELECT * FROM whatsapp_instances WHERE id=:id LIMIT 1")
     suspend fun get(id: String): WhatsAppInstanceEntity?
 
-    @Query("SELECT * FROM whatsapp_instances WHERE packageName=:packageName LIMIT 1")
-    suspend fun getByPackage(packageName: String): WhatsAppInstanceEntity?
+    @Query("SELECT * FROM whatsapp_instances WHERE androidUserId=:userId AND packageName=:packageName LIMIT 1")
+    suspend fun getByPackage(userId: Int, packageName: String): WhatsAppInstanceEntity?
+
+    @Query("""
+        UPDATE whatsapp_instances
+        SET lastResolvedEngine=:engine, reachable=:reachable,
+            lastSuccessfulLaunchAt=:lastSuccessfulLaunchAt
+        WHERE id=:id
+    """)
+    suspend fun updateRuntimeRoute(
+        id: String,
+        engine: String?,
+        reachable: Boolean,
+        lastSuccessfulLaunchAt: Long?,
+    )
 }
 
 @Dao

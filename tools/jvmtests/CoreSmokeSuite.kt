@@ -39,11 +39,21 @@ object CoreSmokeSuite {
             "com.waalothmany.linkbot.automation.OperationLeaseSmokeKt",
             "com.waalothmany.linkbot.automation.NavigationProbePolicySmokeKt",
             "com.waalothmany.linkbot.whatsapp.PackageCandidatePolicySmokeKt",
+            "com.waalothmany.linkbot.whatsapp.ProfileIdentitySmokeKt",
+            "com.waalothmany.linkbot.whatsapp.ProfileResolverSmokeKt",
             "com.waalothmany.linkbot.whatsapp.InstanceInventoryPolicySmokeKt",
             "com.waalothmany.linkbot.capability.AccessibilityConnectionPolicySmokeKt",
             "com.waalothmany.linkbot.capability.OperationStartGateSmokeKt",
             "com.waalothmany.linkbot.capability.ReadinessEvaluatorSmokeKt",
             "com.waalothmany.linkbot.runtime.DiagnosticSanitizerSmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.ExecutionModelsSmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.EngineHealthSmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.ExecutionOrchestratorSmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.ExecutionVerificationSmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.shizuku.ShizukuStateSmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.accessibility.AccessibilityRuntimeStateSmokeKt",
+            "com.waalothmany.linkbot.capability.AccessibilityStartPolicySmokeKt",
+            "com.waalothmany.linkbot.runtime.engine.root.RootCommandPolicySmokeKt",
         )
         classes.forEach { name ->
             val cls = Class.forName(name)
@@ -51,6 +61,9 @@ object CoreSmokeSuite {
                 ?: error("No zero-argument main in $name")
             method.invoke(null)
         }
-        println("CoreSmokeSuite: PASS (${classes.size} tests)")
+        TraceRecorderSmoke.run()
+        CapabilityPresentationSmoke.run()
+        AccessibilityEventCoalescerSmoke.run()
+        println("CoreSmokeSuite: PASS (${classes.size + 3} tests)")
     }
 }

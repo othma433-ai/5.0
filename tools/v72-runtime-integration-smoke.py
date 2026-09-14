@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 root = Path(__file__).resolve().parents[1]
 service = (root / 'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt').read_text()
@@ -33,8 +34,9 @@ if 'OperationLeaseToken' not in lease or 'AtomicReference' not in lease or 'Atom
     raise SystemExit('OperationLease must remain atomic and generation-tokened')
 if 'totalBudgetMs' not in probe:
     raise SystemExit('NavigationProbePolicy budget guard missing')
-if 'versionCode = 72' not in build or 'versionName = "7.2.0-rc1"' not in build:
-    raise SystemExit('v7.2 version metadata mismatch')
+version_match = re.search(r'versionCode\s*=\s*(\d+)', build)
+if version_match is None or int(version_match.group(1)) < 72:
+    raise SystemExit('v7.2+ version metadata requirement not satisfied')
 
 
 # Startup ordering: persist the session before its queue so Stop/restart cannot leave an orphan queue.

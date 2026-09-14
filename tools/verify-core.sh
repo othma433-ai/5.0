@@ -8,13 +8,6 @@ cd "$ROOT"
 
 export TERM="${TERM:-xterm}"
 
-# Bootstrap the exact Kotlin compiler used by this project when the host
-# environment does not provide a standalone kotlinc installation.
-if ! command -v kotlinc >/dev/null 2>&1; then
-  KOTLIN_BIN="$(./tools/bootstrap-kotlinc.sh)"
-  export PATH="$KOTLIN_BIN:$PATH"
-fi
-
 echo "[1/3] Compile pure Kotlin verification suite"
 kotlinc \
   app/src/main/java/com/waalothmany/linkbot/core/link/*.kt \
@@ -52,12 +45,29 @@ kotlinc \
   app/src/main/java/com/waalothmany/linkbot/automation/QueueProgressPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/OperationLease.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/NavigationProbePolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityEventCoalescer.kt \
   app/src/main/java/com/waalothmany/linkbot/whatsapp/PackageCandidatePolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/InstanceIdentityPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/ProfileAwareInstanceResolver.kt \
   app/src/main/java/com/waalothmany/linkbot/whatsapp/InstanceInventoryPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/capability/AccessibilityConnectionPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/capability/OperationStartGate.kt \
   app/src/main/java/com/waalothmany/linkbot/capability/ReadinessEvaluator.kt \
+  app/src/main/java/com/waalothmany/linkbot/capability/CapabilityPresentation.kt \
   app/src/main/java/com/waalothmany/linkbot/runtime/DiagnosticSanitizer.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/trace/ExecutionTrace.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/trace/TraceRecorder.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionModels.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionEngine.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionPostconditionVerifier.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/EngineHealthMonitor.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/EngineCircuitBreaker.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/OperationPlanner.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionOrchestrator.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/shizuku/ShizukuState.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/accessibility/AccessibilityRuntimeState.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/engine/root/RootCommandPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/capability/AccessibilityStartPolicy.kt \
   tools/jvmtests/LinkEngineSmoke.kt \
   tools/jvmtests/ExportChatParserSmoke.kt \
   tools/jvmtests/ExporterSmoke.kt \
@@ -92,11 +102,24 @@ kotlinc \
   tools/jvmtests/OperationLeaseSmoke.kt \
   tools/jvmtests/NavigationProbePolicySmoke.kt \
   tools/jvmtests/PackageCandidatePolicySmoke.kt \
+  tools/jvmtests/ProfileIdentitySmoke.kt \
+  tools/jvmtests/ProfileResolverSmoke.kt \
   tools/jvmtests/InstanceInventoryPolicySmoke.kt \
   tools/jvmtests/AccessibilityConnectionPolicySmoke.kt \
   tools/jvmtests/OperationStartGateSmoke.kt \
   tools/jvmtests/ReadinessEvaluatorSmoke.kt \
+  tools/jvmtests/CapabilityPresentationSmoke.kt \
   tools/jvmtests/DiagnosticSanitizerSmoke.kt \
+  tools/jvmtests/ExecutionModelsSmoke.kt \
+  tools/jvmtests/EngineHealthSmoke.kt \
+  tools/jvmtests/ExecutionOrchestratorSmoke.kt \
+  tools/jvmtests/ExecutionVerificationSmoke.kt \
+  tools/jvmtests/TraceRecorderSmoke.kt \
+  tools/jvmtests/ShizukuStateSmoke.kt \
+  tools/jvmtests/AccessibilityRuntimeStateSmoke.kt \
+  tools/jvmtests/AccessibilityStartPolicySmoke.kt \
+  tools/jvmtests/AccessibilityEventCoalescerSmoke.kt \
+  tools/jvmtests/RootCommandPolicySmoke.kt \
   tools/jvmtests/CoreSmokeSuite.kt \
   -include-runtime -d "$OUT/core.jar"
 
@@ -133,13 +156,13 @@ echo "[3/3] Production-hardening source invariants"
 python - <<'PY'
 from pathlib import Path
 checks = {
-  'app/build.gradle.kts': ['versionCode = 72', 'versionName = "7.2.0-rc1"'],
+  'app/build.gradle.kts': ['versionCode = 73', 'versionName = "7.3.0-rc1"'],
   'app/src/main/AndroidManifest.xml': ['android:allowBackup="false"', 'WaAccessibilityService', 'BotForegroundService', 'OverlayControllerService'],
   'app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityTree.kt': ['URLSpan', 'getSpans', 'screenEvidence', 'messageViewport', 'bestConversationScrollable', 'bestMessageScrollable'],
   'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt': [
       'EndOfListGuard', 'SYNC_STRATEGY_SWITCH', 'SYNC_SELECT_ALL_APPLIED', 'ALL_CHATS_CLASSIFY', 'AMBIGUOUS_GROUP', 'STAGE_TIMEOUT', 'STAGE_RETRY', 'recordBatch', 'GroupIdentityMatcher', 'CheckpointCodec', 'ViewportIdentityPolicy', 'GROUP_FILTER_VERIFIED', 'AdaptiveTimingPolicy', 'StageCircuitBreaker', 'SYNC_COVERAGE_SAFETY_STOP', 'AutomationHealthPolicy', 'MessageViewportPolicy', 'ThroughputMeter', 'ScreenKind.GROUP_LIST', 'SmartQueuePolicy', 'DurableViewportPolicy', 'FailureRecoveryPolicy', 'QueueProgressPolicy', 'OperationLease', 'NavigationProbePolicy', 'VIEWPORT_PERSISTENCE_FAILED', 'SYNC_NAV_DECISION', 'EXTRACT_NAV_DECISION', 'LINK_PERSISTED', 'clickTarget', 'longClickTarget', 'BACK_TOWARD_CHATS', 'UnreadTraversalPolicy', 'ExtractionSelectionPolicy', 'findFilterControl',
   ],
-  'app/src/main/java/com/waalothmany/linkbot/data/AppDatabase.kt': ['version = 2', 'MIGRATION_1_2'],
+  'app/src/main/java/com/waalothmany/linkbot/data/AppDatabase.kt': ['version = 3', 'MIGRATION_1_2', 'MIGRATION_2_3'],
   'app/src/main/java/com/waalothmany/linkbot/data/Repositories.kt': ['withTransaction', 'recordBatch', 'selected(instanceId: String)'],
   'app/src/main/java/com/waalothmany/linkbot/runtime/DiagnosticLog.kt': ['DiagnosticSanitizer', 'runtime.log'],
   '.github/workflows/build-android-apk.yml': [':app:testDebugUnitTest', ':app:assembleDebug', 'upload-artifact'],

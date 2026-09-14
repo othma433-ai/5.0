@@ -8,12 +8,14 @@ import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.waalothmany.linkbot.ServiceLocator
-import com.waalothmany.linkbot.capability.AccessibilityConnectionMonitor
+import com.waalothmany.linkbot.runtime.engine.accessibility.AccessibilityRuntimeSupervisor
 import com.waalothmany.linkbot.core.link.LinkExtractor
 import com.waalothmany.linkbot.data.BotSessionEntity
 import com.waalothmany.linkbot.data.GroupEntity
 import com.waalothmany.linkbot.data.QueueItemEntity
+import com.waalothmany.linkbot.data.WhatsAppInstanceEntity
 import com.waalothmany.linkbot.runtime.BotForegroundService
+import com.waalothmany.linkbot.runtime.EngineRegistry
 import com.waalothmany.linkbot.runtime.DiagnosticLog
 import com.waalothmany.linkbot.runtime.BotRuntime
 import com.waalothmany.linkbot.runtime.RuntimePhase
@@ -26,6 +28,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.cancel
 import java.security.MessageDigest
 import java.util.UUID
@@ -70,6 +73,7 @@ class WaAccessibilityService : AccessibilityService() {
     private var totalQueue = 0
     private var stageWatchdogJob: Job? = null
     private val eventGuard = AtomicBoolean(false)
+    private val eventCoalescer = AccessibilityEventCoalescer(capacity = 4)
     private val prepareInFlight = AtomicBoolean(false)
     private var syncTiming = AdaptiveTimingPolicy(PerformanceProfiles.forMode(PerformanceMode.BALANCED))
     private var extractionTiming = AdaptiveTimingPolicy(PerformanceProfiles.forMode(PerformanceMode.BALANCED))
@@ -85,7 +89,7 @@ class WaAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        AccessibilityConnectionMonitor.markConnected()
+        AccessibilityRuntimeSupervisor.markBinderConnected()
         DiagnosticLog.record("ACCESSIBILITY_CONNECTED")
         scope.launch {
             val recoveryLease = operationLease.acquire(AutomationRunKind.EXTRACT) ?: return@launch
@@ -142,40 +146,75 @@ class WaAccessibilityService : AccessibilityService() {
         extractionProbeJob?.cancel()
         extractionNavigationProbeJob?.cancel()
         operationLease.releaseAny()
+        eventCoalescer.clear()
         scope.cancel()
         if (instance === this) instance = null
-        AccessibilityConnectionMonitor.markDisconnected()
+        AccessibilityRuntimeSupervisor.markDisconnected()
         DiagnosticLog.record("ACCESSIBILITY_DISCONNECTED")
         super.onDestroy()
     }
 
     override fun onInterrupt() {
-        AccessibilityConnectionMonitor.markInterrupted()
+        AccessibilityRuntimeSupervisor.markInterrupted()
         DiagnosticLog.record("ACCESSIBILITY_INTERRUPTED")
         BotRuntime.update(BotRuntime.state.value.copy(phase = RuntimePhase.ERROR, title = "Accessibility interrupted"))
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        AccessibilityConnectionMonitor.markActivity()
-        val pkg = event?.packageName?.toString() ?: return
+        val pkg = event?.packageName?.toString()
+        AccessibilityRuntimeSupervisor.markEvent(pkg)
+        if (pkg == null) return
+        handleAccessibilitySignal(
+            AccessibilityEventSignal(
+                packageName = pkg,
+                eventType = event.eventType,
+                kind = eventSignalKind(event.eventType),
+            )
+        )
+    }
+
+    private fun handleAccessibilitySignal(signal: AccessibilityEventSignal) {
         val wanted = targetPackage ?: return
-        if (pkg != wanted) return
+        if (signal.packageName != wanted) return
         if (BotRuntime.stopRequested) {
+            eventCoalescer.clear()
             finishStopped()
             return
         }
         if (BotRuntime.pauseRequested) return
-        if (!eventGuard.compareAndSet(false, true)) return
+        if (!eventGuard.compareAndSet(false, true)) {
+            eventCoalescer.offer(signal)
+            return
+        }
         try {
             val root = rootInActiveWindow ?: return
-            when (val op = operation) {
-                is Operation.Sync -> handleSync(root, event.eventType)
-                is Operation.Extract -> handleExtraction(root, event.eventType)
+            if (root.packageName?.toString() != wanted) return
+            AccessibilityRuntimeSupervisor.markWindowReady()
+            when (operation) {
+                is Operation.Sync -> handleSync(root, signal.eventType)
+                is Operation.Extract -> handleExtraction(root, signal.eventType)
                 Operation.None -> Unit
             }
         } finally {
             eventGuard.set(false)
+            scheduleCoalescedDrain()
         }
+    }
+
+    private fun scheduleCoalescedDrain() {
+        val signal = eventCoalescer.poll() ?: return
+        scope.launch {
+            yield()
+            handleAccessibilitySignal(signal)
+        }
+    }
+
+    private fun eventSignalKind(eventType: Int): EventSignalKind = when (eventType) {
+        AccessibilityEvent.TYPE_VIEW_SCROLLED -> EventSignalKind.SCROLL
+        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> EventSignalKind.WINDOW_STATE
+        AccessibilityEvent.TYPE_VIEW_CLICKED -> EventSignalKind.CLICK
+        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> EventSignalKind.CONTENT
+        else -> EventSignalKind.OTHER
     }
 
 
@@ -202,7 +241,10 @@ class WaAccessibilityService : AccessibilityService() {
                 ServiceLocator.database.sessionDao().updateState(session, "RUNNING")
                 currentQueue?.let { ServiceLocator.database.queueDao().updateState(it.id, "SCANNING", it.attempts, null) }
             }
-            targetPackage?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
+            if (!launchConfiguredInstance(recovery = true)) {
+                BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp recovery failed", "No execution engine could restore the selected instance"))
+                return@launch
+            }
             rootInActiveWindow?.let { root ->
                 when (operation) {
                     is Operation.Sync -> handleSync(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
@@ -297,7 +339,7 @@ class WaAccessibilityService : AccessibilityService() {
             )
             if (!operationLease.isActive(retryLease)) return@launch
             startRuntimeService("Retrying failed groups")
-            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, instanceEntity.packageName)
+            check(launchInstanceEntity(instanceEntity, recovery = true)) { "INSTANCE_LAUNCH_FAILED" }
             started = true
             } catch (t: Throwable) {
                 DiagnosticLog.record("RETRY_START_FAILED", mapOf("error" to t.javaClass.simpleName))
@@ -320,12 +362,6 @@ class WaAccessibilityService : AccessibilityService() {
                 "SYNC_START_IGNORED_BUSY",
                 mapOf("active" to (operationLease.current()?.name ?: "UNKNOWN"), "package" to (targetPackage ?: packageName)),
             )
-            return false
-        }
-        val canLaunch = packageManager.getLaunchIntentForPackage(packageName) != null
-        if (!canLaunch) {
-            operationLease.release(syncLease)
-            BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp unavailable", packageName))
             return false
         }
         BotRuntime.resetControlFlags()
@@ -393,7 +429,9 @@ class WaAccessibilityService : AccessibilityService() {
             }
             setSyncStage(SyncStage.OPENING)
             BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING, "Opening WhatsApp", "Preparing group sync"))
-            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, packageName)
+            val instanceEntity = ServiceLocator.database.instanceDao().get(instanceId)
+                ?: error("INSTANCE_NOT_FOUND")
+            check(launchInstanceEntity(instanceEntity, recovery = false)) { "INSTANCE_LAUNCH_FAILED" }
             } catch (t: Throwable) {
                 DiagnosticLog.record("SYNC_START_FAILED", mapOf("error" to t.javaClass.simpleName))
                 if (operationLease.isActive(syncLease)) {
@@ -492,7 +530,9 @@ class WaAccessibilityService : AccessibilityService() {
             BotRuntime.update(RuntimeSnapshot(RuntimePhase.EXTRACTING, "Starting extraction", mode.name, 0, ordered.size))
             DiagnosticLog.record("EXTRACTION_START", mapOf("mode" to mode.name, "groups" to ordered.size))
             startRuntimeService("Extracting links")
-            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, packageName)
+            val instanceEntity = ServiceLocator.database.instanceDao().get(instanceId)
+                ?: error("INSTANCE_NOT_FOUND")
+            check(launchInstanceEntity(instanceEntity, recovery = false)) { "INSTANCE_LAUNCH_FAILED" }
             started = true
             } catch (t: Throwable) {
                 DiagnosticLog.record("EXTRACTION_START_FAILED", mapOf("error" to t.javaClass.simpleName))
@@ -507,6 +547,41 @@ class WaAccessibilityService : AccessibilityService() {
                 if (!started) operationLease.release(extractionLease)
             }
         }
+    }
+
+    private suspend fun launchConfiguredInstance(recovery: Boolean): Boolean {
+        val instanceId = targetInstanceId ?: return false
+        val instance = ServiceLocator.database.instanceDao().get(instanceId) ?: return false
+        return launchInstanceEntity(instance, recovery)
+    }
+
+    private suspend fun launchInstanceEntity(
+        instance: WhatsAppInstanceEntity,
+        recovery: Boolean,
+    ): Boolean {
+        val result = if (recovery) EngineRegistry.recoverInstance(instance) else EngineRegistry.launchInstance(instance)
+        val now = System.currentTimeMillis()
+        ServiceLocator.database.instanceDao().updateRuntimeRoute(
+            id = instance.id,
+            engine = result.engine?.name,
+            reachable = result.success,
+            lastSuccessfulLaunchAt = if (result.success) now else instance.lastSuccessfulLaunchAt,
+        )
+        DiagnosticLog.record(
+            "ENGINE_LAUNCH_RESULT",
+            mapOf(
+                "instance" to instance.id.take(12),
+                "user" to instance.androidUserId,
+                "package" to instance.packageName,
+                "recovery" to recovery,
+                "success" to result.success,
+                "engine" to (result.engine?.name ?: "NONE"),
+                "failure" to (result.failure?.name ?: "NONE"),
+                "attempts" to result.attempts.joinToString(">") { it.engine.name + ":" + if (it.success) "OK" else (it.failure?.name ?: "FAIL") },
+                "trace" to result.traceId,
+            ),
+        )
+        return result.success
     }
 
     private fun handleSync(root: AccessibilityNodeInfo, eventType: Int) {
@@ -793,6 +868,7 @@ class WaAccessibilityService : AccessibilityService() {
                         handleSync(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
                     } finally {
                         eventGuard.set(false)
+                        scheduleCoalescedDrain()
                     }
                     val after = operation as? Operation.Sync
                     if (after == null || after.stage !in setOf(SyncStage.OPENING, SyncStage.ALL_CHATS_OPENING)) {
@@ -1135,7 +1211,9 @@ class WaAccessibilityService : AccessibilityService() {
                 ServiceLocator.database.queueDao().updateState(next.id, "LOCATING", next.attempts, null)
                 setExtractStage(ExtractStage.ACTIVATE_GROUP_FILTER)
                 BotRuntime.update(RuntimeSnapshot(RuntimePhase.EXTRACTING, "Locating group", group.displayTitle, next.position + 1, totalQueue, BotRuntime.state.value.linksFound))
-                targetPackage?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
+                if (!launchConfiguredInstance(recovery = true)) {
+                    failCurrentGroup("INSTANCE_LAUNCH_FAILED", "No execution engine could reopen the selected WhatsApp instance")
+                }
             } finally {
                 prepareInFlight.set(false)
             }
@@ -1459,6 +1537,7 @@ class WaAccessibilityService : AccessibilityService() {
                         handleExtraction(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
                     } finally {
                         eventGuard.set(false)
+                        scheduleCoalescedDrain()
                     }
                     val after = operation as? Operation.Extract ?: return@launch
                     if (after.stage == ExtractStage.SCAN_VIEWPORT || after.stage == ExtractStage.PREPARE_LIST) return@launch
@@ -1673,7 +1752,12 @@ class WaAccessibilityService : AccessibilityService() {
                                         mapOf("stage" to key, "attempt" to stageCircuitBreaker.failureCount(key)),
                                     )
                                     setSyncStage(SyncStage.ALL_CHATS_OPENING)
-                                    targetPackage?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
+                                    if (!launchConfiguredInstance(recovery = true)) {
+                                        recordHardFailure(key)
+                                        clearOperation()
+                                        BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp recovery failed", "No execution engine could reopen the selected instance"))
+                                        stopRuntimeService()
+                                    }
                                 }
                                 CircuitDecision.TRIP -> {
                                     recordHardFailure(key)

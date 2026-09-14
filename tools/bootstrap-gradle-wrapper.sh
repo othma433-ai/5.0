@@ -16,13 +16,12 @@ if verify; then
   exit 0
 fi
 
-command -v gradle >/dev/null || {
-  echo "ERROR: Gradle is not installed" >&2
+command -v gradle >/dev/null 2>&1 || {
+  echo "ERROR: Gradle 8.9 must be installed before wrapper bootstrap." >&2
   exit 2
 }
 
 cd "$ROOT"
-
 gradle wrapper \
   --gradle-version 8.9 \
   --distribution-type bin \
@@ -30,7 +29,8 @@ gradle wrapper \
   --no-daemon
 
 verify || {
-  echo "ERROR: Gradle wrapper checksum verification failed" >&2
+  actual="$(sha256sum "$JAR" 2>/dev/null | awk '{print $1}')"
+  echo "ERROR: Gradle wrapper checksum verification failed: ${actual:-missing}" >&2
   exit 3
 }
 

@@ -70,6 +70,7 @@ fun LinkBotApp(
     viewModel: MainViewModel,
     onOpenAccessibility: () -> Unit,
     onOpenOverlay: () -> Unit,
+    onOpenShizuku: () -> Unit,
     onImportChat: () -> Unit,
     onExport: (ExportFormat) -> Unit,
     onExportDiagnostics: () -> Unit,
@@ -95,10 +96,10 @@ fun LinkBotApp(
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp, vertical = 8.dp)) {
                 when (screen) {
-                    Screen.HOME -> HomeScreen(viewModel, onOpenAccessibility, onOpenOverlay, onImportChat, onExport)
+                    Screen.HOME -> HomeScreen(viewModel, onOpenAccessibility, onOpenOverlay, onOpenShizuku, onImportChat, onExport)
                     Screen.GROUPS -> GroupsScreen(viewModel)
                     Screen.LINKS -> LinksScreen(viewModel, onExport)
-                    Screen.SETTINGS -> SettingsScreen(viewModel, onOpenAccessibility, onOpenOverlay, onExportDiagnostics)
+                    Screen.SETTINGS -> SettingsScreen(viewModel, onOpenAccessibility, onOpenOverlay, onOpenShizuku, onExportDiagnostics)
                 }
             }
         }
@@ -110,10 +111,13 @@ private fun HomeScreen(
     vm: MainViewModel,
     onOpenAccessibility: () -> Unit,
     onOpenOverlay: () -> Unit,
+    onOpenShizuku: () -> Unit,
     onImportChat: () -> Unit,
     onExport: (ExportFormat) -> Unit,
 ) {
     val caps by vm.capabilities.collectAsStateWithLifecycle()
+    val rootProbeState by vm.rootProbeState.collectAsStateWithLifecycle()
+    val rootFallbackEnabled by vm.rootFallbackEnabled.collectAsStateWithLifecycle()
     val readiness by vm.readiness.collectAsStateWithLifecycle()
     val groups by vm.groupCount.collectAsStateWithLifecycle()
     val links by vm.linkCount.collectAsStateWithLifecycle()
@@ -143,12 +147,21 @@ private fun HomeScreen(
                 StatusLine("الإشعارات", caps.notifications)
                 StatusLine("الزر العائم (اختياري)", caps.overlay)
                 Text("وضع التنفيذ: ${readiness.executionMode}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (caps.shizukuInstalled) {
-                    Text("Shizuku: التطبيق موجود، لكن المحرك المميز غير مفعّل في نسخة الإنقاذ الحالية.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Shizuku: ${caps.shizukuState}", style = MaterialTheme.typography.bodySmall, color = if (caps.shizukuReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Root: ${if (rootFallbackEnabled) rootProbeState.name else "DISABLED"}", style = MaterialTheme.typography.bodySmall, color = if (rootProbeState.name == "READY") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (caps.shizukuPermissionRequired) {
+                    OutlinedButton(onClick = vm::requestShizukuPermission, modifier = Modifier.fillMaxWidth()) { Text("منح صلاحية Shizuku") }
+                } else if (!caps.shizukuReady) {
+                    OutlinedButton(onClick = onOpenShizuku, modifier = Modifier.fillMaxWidth()) { Text("فتح Shizuku") }
                 }
-                if (caps.rootAvailable) {
-                    Text("Root: تم اكتشاف الملف التنفيذي فقط؛ التشغيل المميز غير مفعّل تلقائيًا.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("استخدام Root كمسار احتياطي")
+                        Text("يُستخدم فقط بعد نجاح فحص su الفعلي، وليس لمجرد وجود الملف.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = rootFallbackEnabled, onCheckedChange = vm::setRootFallbackEnabled)
                 }
+                OutlinedButton(onClick = vm::retryEngineProbes, modifier = Modifier.fillMaxWidth()) { Text("إعادة فحص المحركات") }
                 readiness.blockers.take(3).forEach { blocker ->
                     Text("• $blocker", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
@@ -318,8 +331,10 @@ private fun LinkRow(link: LinkEntity) {
 }
 
 @Composable
-private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, onOpenOverlay: () -> Unit, onExportDiagnostics: () -> Unit) {
+private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, onOpenOverlay: () -> Unit, onOpenShizuku: () -> Unit, onExportDiagnostics: () -> Unit) {
     val caps by vm.capabilities.collectAsStateWithLifecycle()
+    val rootProbeState by vm.rootProbeState.collectAsStateWithLifecycle()
+    val rootFallbackEnabled by vm.rootFallbackEnabled.collectAsStateWithLifecycle()
     val saveText by vm.saveMessageText.collectAsStateWithLifecycle()
     val performanceMode by vm.performanceMode.collectAsStateWithLifecycle()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -362,12 +377,23 @@ private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, o
                 StatusLine("الزر العائم", caps.overlay)
                 StatusLine("الإشعارات", caps.notifications)
                 StatusLine("تطبيق Shizuku موجود", caps.shizukuInstalled)
-                StatusLine("ملف Root موجود", caps.rootAvailable)
-                Text("Shizuku/Root لا يُعتبران وضع تشغيل نشطًا في نسخة الإنقاذ حتى ينجح محرك مميز فعلي واختبار جهاز.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                StatusLine("Shizuku جاهز فعليًا", caps.shizukuReady)
+                Text("Shizuku: ${caps.shizukuState}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                StatusLine("Root مكتشف", caps.rootAvailable)
+                Text("Root probe: ${if (rootFallbackEnabled) rootProbeState.name else "DISABLED"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (caps.shizukuPermissionRequired) {
+                    OutlinedButton(onClick = vm::requestShizukuPermission, modifier = Modifier.fillMaxWidth()) { Text("منح صلاحية Shizuku") }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("استخدام Root كمسار احتياطي", modifier = Modifier.weight(1f))
+                    Switch(checked = rootFallbackEnabled, onCheckedChange = vm::setRootFallbackEnabled)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onOpenAccessibility) { Text("إمكانية الوصول") }
                     OutlinedButton(onClick = onOpenOverlay) { Text("الزر العائم") }
+                    OutlinedButton(onClick = onOpenShizuku) { Text("Shizuku") }
                 }
+                OutlinedButton(onClick = vm::retryEngineProbes, modifier = Modifier.fillMaxWidth()) { Text("إعادة فحص المحركات") }
             }
         }
     }
@@ -379,12 +405,12 @@ private fun InstanceSelector(instances: List<com.waalothmany.linkbot.data.WhatsA
     val selected = instances.firstOrNull { it.id == selectedId }
     Box {
         OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-            Text(selected?.let { "${it.label} • ${it.kind}${if (it.enabled) "" else " • غير متاح"}" } ?: "لم يتم اكتشاف واتساب متاح", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(selected?.let { "${it.label} • ${it.profileType} • User ${it.androidUserId}${if (it.enabled) "" else " • غير متاح"}" } ?: "لم يتم اكتشاف واتساب متاح", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             instances.forEach { item ->
                 DropdownMenuItem(
-                    text = { Text("${item.label} (${item.packageName})${if (item.enabled) "" else " • غير متاح في الملف الحالي"}") },
+                    text = { Text("${item.label} • ${item.profileType} • User ${item.androidUserId} • ${item.packageName}${if (item.enabled) "" else " • غير متاح"}") },
                     enabled = item.enabled,
                     onClick = { expanded = false; onSelect(item.id) },
                 )

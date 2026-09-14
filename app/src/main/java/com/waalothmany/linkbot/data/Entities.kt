@@ -4,12 +4,22 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "whatsapp_instances", indices = [Index(value = ["packageName"], unique = true)])
+@Entity(
+    tableName = "whatsapp_instances",
+    indices = [Index(value = ["androidUserId", "packageName"], unique = true)],
+)
 data class WhatsAppInstanceEntity(
     @PrimaryKey val id: String,
     val packageName: String,
     val label: String,
     val kind: String,
+    val androidUserId: Int = 0,
+    val profileType: String = "PERSONAL",
+    val profileLabel: String? = null,
+    val launchStrategy: String = "STANDARD",
+    val lastResolvedEngine: String? = null,
+    val reachable: Boolean = true,
+    val lastSuccessfulLaunchAt: Long? = null,
     val enabled: Boolean = true,
     val lastSeenAt: Long = System.currentTimeMillis(),
 )

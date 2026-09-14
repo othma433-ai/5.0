@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.UserHandle
 import com.waalothmany.linkbot.data.WhatsAppInstanceEntity
 
 object WhatsAppInstanceDetector {
@@ -11,6 +12,7 @@ object WhatsAppInstanceDetector {
 
     fun detect(context: Context): List<WhatsAppInstanceEntity> {
         val pm = context.packageManager
+        val currentUserId = UserHandle.myUserId()
         val packages = LinkedHashSet<String>()
 
         // Explicitly queried packages are visible without QUERY_ALL_PACKAGES.
@@ -26,10 +28,14 @@ object WhatsAppInstanceDetector {
             if (pm.getLaunchIntentForPackage(pkg) == null) return@mapNotNull null
             val label = applicationLabel(pm, pkg).ifBlank { pkg }
             WhatsAppInstanceEntity(
-                id = InstanceIdentityPolicy.stableId(pkg),
+                id = InstanceIdentityPolicy.stableId(currentUserId, pkg),
                 packageName = pkg,
                 label = label,
                 kind = PackageCandidatePolicy.kind(pkg, label),
+                androidUserId = currentUserId,
+                profileType = if (currentUserId == 0) "PERSONAL" else "UNKNOWN",
+                launchStrategy = "STANDARD",
+                reachable = true,
             )
         }.sortedBy { it.label.lowercase() }
     }

@@ -54,6 +54,14 @@ class MainActivity : ComponentActivity() {
                 onOpenOverlay = {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                 },
+                onOpenShizuku = {
+                    val launch = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                    if (launch != null) {
+                        startActivity(launch)
+                    } else {
+                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:moe.shizuku.privileged.api")))
+                    }
+                },
                 onImportChat = { importLauncher.launch(arrayOf("text/plain", "application/zip", "application/octet-stream")) },
                 onExport = { format ->
                     pendingExport = format
