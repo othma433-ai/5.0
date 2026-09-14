@@ -1,7 +1,7 @@
 package com.waalothmany.linkbot.data
 
 import android.content.Context
-import android.os.UserHandle
+import com.waalothmany.linkbot.runtime.AndroidUserIdentity
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -80,7 +80,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         fun create(context: Context): AppDatabase {
-            val currentUserId = UserHandle.myUserId()
+            val currentUserId = AndroidUserIdentity.currentUserId()
             val currentProfileType = if (currentUserId == 0) "PERSONAL" else "UNKNOWN"
             return Room.databaseBuilder(
                 context.applicationContext,

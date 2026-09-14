@@ -13,6 +13,7 @@ python3 tools/v72-runtime-integration-smoke.py
 python3 tools/v73-runtime-integration-smoke.py
 python3 tools/shizuku-runtime-smoke.py
 python3 tools/system-engine-integration-smoke.py
+python3 tools/android-public-api-smoke.py
 python3 tools/v73-database-smoke.py
 python3 tools/root-engine-smoke.py
 python3 tools/accessibility-runtime-integration-smoke.py

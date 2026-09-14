@@ -2,7 +2,7 @@ package com.waalothmany.linkbot.runtime.engine.standard
 
 import android.content.Context
 import android.content.Intent
-import android.os.UserHandle
+import com.waalothmany.linkbot.runtime.AndroidUserIdentity
 import com.waalothmany.linkbot.runtime.engine.EngineCapability
 import com.waalothmany.linkbot.runtime.engine.EngineExecutionResult
 import com.waalothmany.linkbot.runtime.engine.EngineId
@@ -33,7 +33,7 @@ class StandardAndroidEngine(
         engine = id,
         state = ProbeState.READY,
         capabilities = supported,
-        detail = "user=${UserHandle.myUserId()}",
+        detail = "user=${AndroidUserIdentity.currentUserId()}",
     )
 
     override suspend fun execute(
@@ -42,11 +42,12 @@ class StandardAndroidEngine(
     ): EngineExecutionResult {
         val target = request.target
             ?: return EngineExecutionResult(id, false, failure = ExecutionFailureClass.PROFILE_UNREACHABLE)
-        if (target.androidUserId != UserHandle.myUserId()) {
+        val currentUserId = AndroidUserIdentity.currentUserId()
+        if (target.androidUserId != currentUserId) {
             return EngineExecutionResult(
                 id,
                 false,
-                detail = "targetUser=${target.androidUserId} currentUser=${UserHandle.myUserId()}",
+                detail = "targetUser=${target.androidUserId} currentUser=$currentUserId",
                 failure = ExecutionFailureClass.PROFILE_UNREACHABLE,
             )
         }

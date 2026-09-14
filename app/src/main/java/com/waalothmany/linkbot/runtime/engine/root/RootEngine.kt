@@ -45,42 +45,113 @@ class RootEngine(
     override suspend fun execute(
         request: ExecutionRequest,
         context: ExecutionContext,
-    ): EngineExecutionResult = try {
-        if (!enabledProvider()) return EngineExecutionResult(id, false, failure = ExecutionFailureClass.UNSUPPORTED_OPERATION)
-        when (request.operation) {
-            SystemOperation.DISCOVER_USERS -> {
-                val result = gateway.listUsers(request.timeoutMs)
-                fromCommand(result, metadata = if (result.success) mapOf("usersRaw" to result.output) else emptyMap())
-            }
-            SystemOperation.DISCOVER_PACKAGES -> {
-                val target = request.target ?: return missingTarget()
-                val result = gateway.listPackagesForUser(target.androidUserId, request.timeoutMs)
-                fromCommand(result, metadata = if (result.success) mapOf("packagesRaw" to result.output) else emptyMap())
-            }
-            SystemOperation.RESOLVE_INSTANCE -> {
-                val target = request.target ?: return missingTarget()
-                val result = gateway.listPackagesForUser(target.androidUserId, request.timeoutMs)
-                if (!result.success) fromCommand(result)
-                else {
-                    val found = result.output.lineSequence().any { it.trim() == "package:${target.packageName}" }
-                    EngineExecutionResult(id, found, failure = if (found) null else ExecutionFailureClass.PACKAGE_UNAVAILABLE)
-                }
-            }
-            SystemOperation.LAUNCH_INSTANCE,
-            SystemOperation.RECOVER_INSTANCE -> {
-                val target = request.target ?: return missingTarget()
-                fromCommand(gateway.launchPackageForUser(target.androidUserId, target.packageName, request.timeoutMs))
-            }
-            SystemOperation.FORCE_STOP_INSTANCE -> {
-                val target = request.target ?: return missingTarget()
-                fromCommand(gateway.forceStopPackageForUser(target.androidUserId, target.packageName, request.timeoutMs))
-            }
-            else -> EngineExecutionResult(id, false, failure = ExecutionFailureClass.UNSUPPORTED_OPERATION)
+    ): EngineExecutionResult {
+        if (!enabledProvider()) {
+            return EngineExecutionResult(
+                id,
+                false,
+                failure = ExecutionFailureClass.UNSUPPORTED_OPERATION,
+            )
         }
-    } catch (error: SecurityException) {
-        EngineExecutionResult(id, false, error.javaClass.simpleName, ExecutionFailureClass.PERMISSION_DENIED)
-    } catch (error: Throwable) {
-        EngineExecutionResult(id, false, error.javaClass.simpleName, ExecutionFailureClass.UNKNOWN)
+
+        return try {
+            when (request.operation) {
+                SystemOperation.DISCOVER_USERS -> {
+                    val result = gateway.listUsers(request.timeoutMs)
+                    fromCommand(
+                        result,
+                        metadata = if (result.success) {
+                            mapOf("usersRaw" to result.output)
+                        } else {
+                            emptyMap()
+                        },
+                    )
+                }
+
+                SystemOperation.DISCOVER_PACKAGES -> {
+                    val target = request.target ?: return missingTarget()
+                    val result = gateway.listPackagesForUser(
+                        target.androidUserId,
+                        request.timeoutMs,
+                    )
+                    fromCommand(
+                        result,
+                        metadata = if (result.success) {
+                            mapOf("packagesRaw" to result.output)
+                        } else {
+                            emptyMap()
+                        },
+                    )
+                }
+
+                SystemOperation.RESOLVE_INSTANCE -> {
+                    val target = request.target ?: return missingTarget()
+                    val result = gateway.listPackagesForUser(
+                        target.androidUserId,
+                        request.timeoutMs,
+                    )
+                    if (!result.success) {
+                        fromCommand(result)
+                    } else {
+                        val found = result.output.lineSequence()
+                            .any { it.trim() == "package:${target.packageName}" }
+
+                        EngineExecutionResult(
+                            id,
+                            found,
+                            failure = if (found) {
+                                null
+                            } else {
+                                ExecutionFailureClass.PACKAGE_UNAVAILABLE
+                            },
+                        )
+                    }
+                }
+
+                SystemOperation.LAUNCH_INSTANCE,
+                SystemOperation.RECOVER_INSTANCE -> {
+                    val target = request.target ?: return missingTarget()
+                    fromCommand(
+                        gateway.launchPackageForUser(
+                            target.androidUserId,
+                            target.packageName,
+                            request.timeoutMs,
+                        )
+                    )
+                }
+
+                SystemOperation.FORCE_STOP_INSTANCE -> {
+                    val target = request.target ?: return missingTarget()
+                    fromCommand(
+                        gateway.forceStopPackageForUser(
+                            target.androidUserId,
+                            target.packageName,
+                            request.timeoutMs,
+                        )
+                    )
+                }
+
+                else -> EngineExecutionResult(
+                    id,
+                    false,
+                    failure = ExecutionFailureClass.UNSUPPORTED_OPERATION,
+                )
+            }
+        } catch (error: SecurityException) {
+            EngineExecutionResult(
+                id,
+                false,
+                error.javaClass.simpleName,
+                ExecutionFailureClass.PERMISSION_DENIED,
+            )
+        } catch (error: Throwable) {
+            EngineExecutionResult(
+                id,
+                false,
+                error.javaClass.simpleName,
+                ExecutionFailureClass.UNKNOWN,
+            )
+        }
     }
 
     private fun fromCommand(

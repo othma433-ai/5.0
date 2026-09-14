@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.UserHandle
+import com.waalothmany.linkbot.runtime.AndroidUserIdentity
 import com.waalothmany.linkbot.data.WhatsAppInstanceEntity
 
 object WhatsAppInstanceDetector {
@@ -12,7 +12,7 @@ object WhatsAppInstanceDetector {
 
     fun detect(context: Context): List<WhatsAppInstanceEntity> {
         val pm = context.packageManager
-        val currentUserId = UserHandle.myUserId()
+        val currentUserId = AndroidUserIdentity.currentUserId()
         val packages = LinkedHashSet<String>()
 
         // Explicitly queried packages are visible without QUERY_ALL_PACKAGES.

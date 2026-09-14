@@ -5,7 +5,7 @@ assert std.exists(), std
 assert a11y.exists(), a11y
 st = std.read_text()
 at = a11y.read_text()
-for token in ('EngineId.STANDARD_ANDROID', 'getLaunchIntentForPackage', 'UserHandle.myUserId()', 'LAUNCH_PACKAGE_CURRENT_USER'):
+for token in ('EngineId.STANDARD_ANDROID', 'getLaunchIntentForPackage', 'AndroidUserIdentity.currentUserId()', 'LAUNCH_PACKAGE_CURRENT_USER'):
     assert token in st, token
 assert 'LAUNCH_PACKAGE_FOR_USER' not in st
 for token in ('EngineId.ACCESSIBILITY', 'AccessibilityRuntimeSupervisor.state.value', 'ACCESSIBILITY_TREE', 'VERIFY_SCREEN'):
