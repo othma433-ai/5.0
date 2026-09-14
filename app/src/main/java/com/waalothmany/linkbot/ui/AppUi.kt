@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -56,24 +57,32 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.waalothmany.linkbot.BuildConfig
 import com.waalothmany.linkbot.MainViewModel
 import com.waalothmany.linkbot.automation.AutomationMode
+import com.waalothmany.linkbot.automation.GroupFilterFacts
+import com.waalothmany.linkbot.automation.GroupFilterMode
+import com.waalothmany.linkbot.automation.GroupFilterPolicy
 import com.waalothmany.linkbot.automation.PerformanceMode
 import com.waalothmany.linkbot.core.exporter.ExportFormat
+import com.waalothmany.linkbot.core.exporter.ExportGrouping
+import com.waalothmany.linkbot.core.exporter.ExportScope
+import com.waalothmany.linkbot.data.ExportOccurrenceRow
+import com.waalothmany.linkbot.core.results.ResultFilterPolicy
+import com.waalothmany.linkbot.core.results.ResultFilterItem
+import com.waalothmany.linkbot.core.results.ResultFilter
 import com.waalothmany.linkbot.data.GroupEntity
 import com.waalothmany.linkbot.data.LinkEntity
 import com.waalothmany.linkbot.runtime.RuntimePhase
 
 private enum class Screen { HOME, GROUPS, LINKS, SETTINGS }
-private enum class GroupFilter { ALL, UNREAD, READ, ACTIVE, UNSCANNED, FAILED, COMPLETED }
 
 @Composable
 fun LinkBotApp(
     viewModel: MainViewModel,
     onOpenAccessibility: () -> Unit,
     onOpenOverlay: () -> Unit,
-    onOpenShizuku: () -> Unit,
     onImportChat: () -> Unit,
     onExport: (ExportFormat) -> Unit,
     onExportDiagnostics: () -> Unit,
+    onChooseExportDirectory: () -> Unit,
 ) {
     val colors = darkColorScheme(
         primary = Color(0xFF48D597),
@@ -96,10 +105,10 @@ fun LinkBotApp(
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp, vertical = 8.dp)) {
                 when (screen) {
-                    Screen.HOME -> HomeScreen(viewModel, onOpenAccessibility, onOpenOverlay, onOpenShizuku, onImportChat, onExport)
+                    Screen.HOME -> HomeScreen(viewModel, onOpenAccessibility, onOpenOverlay, onImportChat, onExport)
                     Screen.GROUPS -> GroupsScreen(viewModel)
                     Screen.LINKS -> LinksScreen(viewModel, onExport)
-                    Screen.SETTINGS -> SettingsScreen(viewModel, onOpenAccessibility, onOpenOverlay, onOpenShizuku, onExportDiagnostics)
+                    Screen.SETTINGS -> SettingsScreen(viewModel, onOpenAccessibility, onOpenOverlay, onExportDiagnostics, onChooseExportDirectory)
                 }
             }
         }
@@ -111,13 +120,10 @@ private fun HomeScreen(
     vm: MainViewModel,
     onOpenAccessibility: () -> Unit,
     onOpenOverlay: () -> Unit,
-    onOpenShizuku: () -> Unit,
     onImportChat: () -> Unit,
     onExport: (ExportFormat) -> Unit,
 ) {
     val caps by vm.capabilities.collectAsStateWithLifecycle()
-    val rootProbeState by vm.rootProbeState.collectAsStateWithLifecycle()
-    val rootFallbackEnabled by vm.rootFallbackEnabled.collectAsStateWithLifecycle()
     val readiness by vm.readiness.collectAsStateWithLifecycle()
     val groups by vm.groupCount.collectAsStateWithLifecycle()
     val links by vm.linkCount.collectAsStateWithLifecycle()
@@ -144,24 +150,22 @@ private fun HomeScreen(
                 StatusLine("جاهزية المحرك", readiness.coreReady)
                 StatusLine("الوصول مفعّل في النظام", caps.accessibilityEnabled)
                 StatusLine("خدمة الوصول متصلة فعليًا", caps.accessibilityConnected)
+                Text("Accessibility state: ${caps.accessibilityState.name}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 StatusLine("الإشعارات", caps.notifications)
                 StatusLine("الزر العائم (اختياري)", caps.overlay)
                 Text("وضع التنفيذ: ${readiness.executionMode}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Shizuku: ${caps.shizukuState}", style = MaterialTheme.typography.bodySmall, color = if (caps.shizukuReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Root: ${if (rootFallbackEnabled) rootProbeState.name else "DISABLED"}", style = MaterialTheme.typography.bodySmall, color = if (rootProbeState.name == "READY") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                if (caps.shizukuPermissionRequired) {
-                    OutlinedButton(onClick = vm::requestShizukuPermission, modifier = Modifier.fillMaxWidth()) { Text("منح صلاحية Shizuku") }
-                } else if (!caps.shizukuReady) {
-                    OutlinedButton(onClick = onOpenShizuku, modifier = Modifier.fillMaxWidth()) { Text("فتح Shizuku") }
+                if (caps.shizukuInstalled) {
+                    Text(
+                        "Shizuku: ${if (caps.shizukuUsable) "جاهز ومصرح" else if (caps.shizukuBinderAlive) "متصل ويحتاج تصريح" else "مثبت لكن Binder غير جاهز"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("استخدام Root كمسار احتياطي")
-                        Text("يُستخدم فقط بعد نجاح فحص su الفعلي، وليس لمجرد وجود الملف.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(checked = rootFallbackEnabled, onCheckedChange = vm::setRootFallbackEnabled)
+                if (caps.rootDetected) {
+                    Text("Root: ${if (caps.rootUsable) "تم إثبات صلاحية uid 0" else "مكتشف لكن الصلاحية غير مثبتة"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                OutlinedButton(onClick = vm::retryEngineProbes, modifier = Modifier.fillMaxWidth()) { Text("إعادة فحص المحركات") }
+                StatusLine("Foreground service", caps.foregroundServiceReady)
+                StatusLine("Storage Access Framework", caps.storageAccessFrameworkReady)
                 readiness.blockers.take(3).forEach { blocker ->
                     Text("• $blocker", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
@@ -204,11 +208,14 @@ private fun HomeScreen(
                     Button(onClick = vm::syncGroups, enabled = readiness.coreReady && selectedInstance != null, modifier = Modifier.weight(1f)) { Icon(Icons.Default.CloudDownload, null); Text(" مزامنة") }
                     Button(onClick = { vm.startExtraction(mode) }, enabled = readiness.coreReady && selectedInstance != null, modifier = Modifier.weight(1f)) { Icon(Icons.Default.PlayArrow, null); Text(" استخراج") }
                 }
-                OutlinedButton(onClick = vm::retryFailed, modifier = Modifier.fillMaxWidth()) { Text("إعادة محاولة الفاشلة") }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = vm::resumePending, modifier = Modifier.weight(1f)) { Text("استكمال المعلّق") }
+                    OutlinedButton(onClick = vm::retryFailed, modifier = Modifier.weight(1f)) { Text("إعادة الفاشلة") }
+                }
             }
         }
         item {
-            if (runtime.phase in setOf(RuntimePhase.SYNCING, RuntimePhase.EXTRACTING, RuntimePhase.PAUSED, RuntimePhase.RECOVERING)) {
+            if (runtime.phase in setOf(RuntimePhase.SYNCING_GROUPS, RuntimePhase.EXTRACTING, RuntimePhase.PAUSED, RuntimePhase.RECOVERING)) {
                 CompactCard {
                     Text(runtime.title, fontWeight = FontWeight.SemiBold)
                     if (runtime.detail.isNotBlank()) Text(runtime.detail, style = MaterialTheme.typography.bodySmall)
@@ -242,35 +249,44 @@ private fun HomeScreen(
 @Composable
 private fun GroupsScreen(vm: MainViewModel) {
     val all by vm.groups.collectAsStateWithLifecycle()
-    var filter by remember { mutableStateOf(GroupFilter.ALL) }
-    val groups = when (filter) {
-        GroupFilter.ALL -> all
-        GroupFilter.UNREAD -> all.filter { it.unread }
-        GroupFilter.READ -> all.filter { !it.unread }
-        GroupFilter.ACTIVE -> all.filter { it.active }
-        GroupFilter.UNSCANNED -> all.filter { it.extractionState == "NEVER_SCANNED" }
-        GroupFilter.FAILED -> all.filter { it.extractionState == "FAILED" }
-        GroupFilter.COMPLETED -> all.filter { it.extractionState == "COMPLETED" }
+    var filter by remember { mutableStateOf(GroupFilterMode.ALL) }
+    var query by remember { mutableStateOf("") }
+    fun facts(group: GroupEntity) = GroupFilterFacts(group.unread, group.active, group.isNew, group.extractionState)
+    val groups = all.filter { group ->
+        GroupFilterPolicy.matches(filter, facts(group)) &&
+            (query.isBlank() || group.displayTitle.contains(query.trim(), ignoreCase = true))
     }
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("القروبات", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("بحث في القروبات") },
+        )
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilterChip(selected = filter == GroupFilter.ALL, onClick = { filter = GroupFilter.ALL }, label = { Text("الكل ${all.size}") })
-            FilterChip(selected = filter == GroupFilter.UNREAD, onClick = { filter = GroupFilter.UNREAD }, label = { Text("غير مقروء ${all.count { it.unread }}") })
-            FilterChip(selected = filter == GroupFilter.READ, onClick = { filter = GroupFilter.READ }, label = { Text("مقروء ${all.count { !it.unread }}") })
-            FilterChip(selected = filter == GroupFilter.ACTIVE, onClick = { filter = GroupFilter.ACTIVE }, label = { Text("نشط ${all.count { it.active }}") })
-            FilterChip(selected = filter == GroupFilter.UNSCANNED, onClick = { filter = GroupFilter.UNSCANNED }, label = { Text("لم يُفحص ${all.count { it.extractionState == "NEVER_SCANNED" }}") })
-            FilterChip(selected = filter == GroupFilter.FAILED, onClick = { filter = GroupFilter.FAILED }, label = { Text("فشل ${all.count { it.extractionState == "FAILED" }}") })
-            FilterChip(selected = filter == GroupFilter.COMPLETED, onClick = { filter = GroupFilter.COMPLETED }, label = { Text("مكتمل ${all.count { it.extractionState == "COMPLETED" }}") })
+            GroupFilterMode.entries.forEach { item ->
+                val count = all.count { GroupFilterPolicy.matches(item, facts(it)) }
+                val label = when (item) {
+                    GroupFilterMode.ALL -> "الكل"
+                    GroupFilterMode.UNREAD -> "غير مقروء"
+                    GroupFilterMode.READ -> "مقروء"
+                    GroupFilterMode.ACTIVE -> "نشط"
+                    GroupFilterMode.NEW -> "جديد"
+                    GroupFilterMode.NOT_SCANNED -> "لم يُفحص"
+                    GroupFilterMode.COMPLETED -> "مكتمل"
+                    GroupFilterMode.FAILED -> "فشل"
+                    GroupFilterMode.PENDING -> "معلّق"
+                }
+                FilterChip(selected = filter == item, onClick = { filter = item }, label = { Text("$label $count") })
+            }
         }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = vm::selectAll) { Text("تحديد الكل") }
-            OutlinedButton(onClick = vm::clearSelection) { Text("إلغاء التحديد") }
-            OutlinedButton(onClick = vm::selectUnread) { Text("غير مقروء") }
-            OutlinedButton(onClick = vm::selectRead) { Text("المقروء") }
-            OutlinedButton(onClick = vm::selectActive) { Text("النشط") }
-            OutlinedButton(onClick = vm::selectNeverScanned) { Text("لم يُفحص") }
-            OutlinedButton(onClick = vm::selectFailed) { Text("الفاشلة") }
+            OutlinedButton(onClick = vm::clearSelection) { Text("إلغاء") }
+            OutlinedButton(onClick = vm::invertSelection) { Text("عكس") }
+            OutlinedButton(onClick = { vm.selectCurrentFilter(filter) }) { Text("تحديد الفلتر الحالي") }
         }
         LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(groups, key = { it.id }) { group -> GroupRow(group, vm::setSelected) }
@@ -298,12 +314,34 @@ private fun GroupRow(group: GroupEntity, onSelected: (GroupEntity, Boolean) -> U
 @Composable
 private fun LinksScreen(vm: MainViewModel, onExport: (ExportFormat) -> Unit) {
     val links by vm.links.collectAsStateWithLifecycle()
+    val occurrences by vm.resultOccurrences.collectAsStateWithLifecycle()
     var formatExpanded by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) {
+    var showOccurrences by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf<String?>(null) }
+    var group by remember { mutableStateOf<String?>(null) }
+    var date by remember { mutableStateOf("") }
+    var categoryExpanded by remember { mutableStateOf(false) }
+    var groupExpanded by remember { mutableStateOf(false) }
+
+    val occurrenceItems = occurrences.map {
+        ResultFilterItem(it.occurrenceId, it.url, it.category, it.groupTitle, it.timestampRaw)
+    }
+    val filteredOccurrenceIds = ResultFilterPolicy.filter(
+        occurrenceItems,
+        ResultFilter(query = query, category = category, group = group, date = date),
+    ).mapTo(hashSetOf()) { it.id }
+    val filteredOccurrences = occurrences.filter { it.occurrenceId in filteredOccurrenceIds }
+    val eligibleUrls = filteredOccurrences.mapTo(hashSetOf()) { it.url }
+    val filteredLinks = links.filter { it.canonicalUrl in eligibleUrls }
+    val categories = occurrences.map { it.category }.distinct().sorted()
+    val groups = occurrences.mapNotNull { it.groupTitle }.distinct().sorted()
+
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column {
-                Text("الروابط", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("${links.size} رابط فريد", style = MaterialTheme.typography.bodySmall)
+                Text("النتائج", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("${filteredLinks.size} فريد • ${filteredOccurrences.size} ظهور", style = MaterialTheme.typography.bodySmall)
             }
             Box {
                 OutlinedButton(onClick = { formatExpanded = true }) { Text("تصدير") }
@@ -314,8 +352,52 @@ private fun LinksScreen(vm: MainViewModel, onExport: (ExportFormat) -> Unit) {
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            items(links, key = { it.id }) { link -> LinkRow(link) }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = !showOccurrences, onClick = { showOccurrences = false }, label = { Text("Unique Links") })
+            FilterChip(selected = showOccurrences, onClick = { showOccurrences = true }, label = { Text("All Occurrences") })
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            label = { Text("بحث URL / نوع / قروب") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box {
+                OutlinedButton(onClick = { categoryExpanded = true }) { Text(category ?: "كل الأنواع") }
+                DropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                    DropdownMenuItem(text = { Text("كل الأنواع") }, onClick = { category = null; categoryExpanded = false })
+                    categories.forEach { value ->
+                        DropdownMenuItem(text = { Text(value) }, onClick = { category = value; categoryExpanded = false })
+                    }
+                }
+            }
+            Box {
+                OutlinedButton(onClick = { groupExpanded = true }) { Text(group ?: "كل القروبات") }
+                DropdownMenu(expanded = groupExpanded, onDismissRequest = { groupExpanded = false }) {
+                    DropdownMenuItem(text = { Text("كل القروبات") }, onClick = { group = null; groupExpanded = false })
+                    groups.forEach { value ->
+                        DropdownMenuItem(text = { Text(value) }, onClick = { group = value; groupExpanded = false })
+                    }
+                }
+            }
+        }
+        OutlinedTextField(
+            value = date,
+            onValueChange = { date = it },
+            label = { Text("فلتر التاريخ (مثال 2026-09-14)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (showOccurrences) {
+            LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                items(filteredOccurrences, key = { it.occurrenceId }) { row -> OccurrenceRow(row) }
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                items(filteredLinks, key = { it.id }) { link -> LinkRow(link) }
+            }
         }
     }
 }
@@ -331,12 +413,37 @@ private fun LinkRow(link: LinkEntity) {
 }
 
 @Composable
-private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, onOpenOverlay: () -> Unit, onOpenShizuku: () -> Unit, onExportDiagnostics: () -> Unit) {
+private fun OccurrenceRow(row: ExportOccurrenceRow) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))) {
+        Column(Modifier.fillMaxWidth().padding(10.dp)) {
+            Text(row.url, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                listOfNotNull(row.category, row.groupTitle, row.sender, row.timestampRaw).joinToString(" • "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    vm: MainViewModel,
+    onOpenAccessibility: () -> Unit,
+    onOpenOverlay: () -> Unit,
+    onExportDiagnostics: () -> Unit,
+    onChooseExportDirectory: () -> Unit,
+) {
     val caps by vm.capabilities.collectAsStateWithLifecycle()
-    val rootProbeState by vm.rootProbeState.collectAsStateWithLifecycle()
-    val rootFallbackEnabled by vm.rootFallbackEnabled.collectAsStateWithLifecycle()
     val saveText by vm.saveMessageText.collectAsStateWithLifecycle()
     val performanceMode by vm.performanceMode.collectAsStateWithLifecycle()
+    val autoResume by vm.autoResume.collectAsStateWithLifecycle()
+    val autoRetryFailed by vm.autoRetryFailed.collectAsStateWithLifecycle()
+    val autoExport by vm.autoExport.collectAsStateWithLifecycle()
+    val exportScope by vm.exportScope.collectAsStateWithLifecycle()
+    val exportGrouping by vm.exportGrouping.collectAsStateWithLifecycle()
+    val exportFormat by vm.exportFormat.collectAsStateWithLifecycle()
+    val exportDirectoryConfigured by vm.exportDirectoryConfigured.collectAsStateWithLifecycle()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { Text("الإعدادات", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         item {
@@ -364,6 +471,51 @@ private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, o
         }
         item {
             CompactCard {
+                Text("الاستمرارية", fontWeight = FontWeight.SemiBold)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto Resume")
+                        Text("استئناف جلسة الاستخراج المحفوظة بعد عودة خدمة الوصول.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = autoResume, onCheckedChange = vm::setAutoResume)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto Retry Failed")
+                        Text("إعادة المحاولة للعناصر المصنفة آمنة لإعادة المحاولة فقط.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = autoRetryFailed, onCheckedChange = vm::setAutoRetryFailed)
+                }
+            }
+        }
+        item {
+            CompactCard {
+                Text("التصدير", fontWeight = FontWeight.SemiBold)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ExportFormat.entries.forEach { format ->
+                        FilterChip(selected = exportFormat == format, onClick = { vm.setExportFormat(format) }, label = { Text(format.name) })
+                    }
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = exportScope == ExportScope.UNIQUE_LINKS, onClick = { vm.setExportScope(ExportScope.UNIQUE_LINKS) }, label = { Text("Unique Links") })
+                    FilterChip(selected = exportScope == ExportScope.ALL_OCCURRENCES, onClick = { vm.setExportScope(ExportScope.ALL_OCCURRENCES) }, label = { Text("All Occurrences") })
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = exportGrouping == ExportGrouping.COMBINED, onClick = { vm.setExportGrouping(ExportGrouping.COMBINED) }, label = { Text("ملف شامل") })
+                    FilterChip(selected = exportGrouping == ExportGrouping.PER_GROUP, onClick = { vm.setExportGrouping(ExportGrouping.PER_GROUP) }, label = { Text("ملف لكل قروب") })
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("تصدير تلقائي بعد الجلسة")
+                        Text(if (exportDirectoryConfigured) "مجلد التصدير محفوظ" else "اختر مجلدًا دائمًا عبر Storage Access Framework", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = autoExport, onCheckedChange = vm::setAutoExport)
+                }
+                OutlinedButton(onClick = onChooseExportDirectory) { Text(if (exportDirectoryConfigured) "تغيير مجلد التصدير" else "اختيار مجلد التصدير") }
+            }
+        }
+        item {
+            CompactCard {
                 Text("التشخيص", fontWeight = FontWeight.SemiBold)
                 Text("يُصدّر سجلًا تقنيًا منقحًا بدون نصوص الرسائل أو الروابط الكاملة.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(onClick = onExportDiagnostics) { Text("تصدير سجل التشخيص") }
@@ -377,23 +529,19 @@ private fun SettingsScreen(vm: MainViewModel, onOpenAccessibility: () -> Unit, o
                 StatusLine("الزر العائم", caps.overlay)
                 StatusLine("الإشعارات", caps.notifications)
                 StatusLine("تطبيق Shizuku موجود", caps.shizukuInstalled)
-                StatusLine("Shizuku جاهز فعليًا", caps.shizukuReady)
-                Text("Shizuku: ${caps.shizukuState}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                StatusLine("Root مكتشف", caps.rootAvailable)
-                Text("Root probe: ${if (rootFallbackEnabled) rootProbeState.name else "DISABLED"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (caps.shizukuPermissionRequired) {
-                    OutlinedButton(onClick = vm::requestShizukuPermission, modifier = Modifier.fillMaxWidth()) { Text("منح صلاحية Shizuku") }
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("استخدام Root كمسار احتياطي", modifier = Modifier.weight(1f))
-                    Switch(checked = rootFallbackEnabled, onCheckedChange = vm::setRootFallbackEnabled)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusLine("Shizuku Binder", caps.shizukuBinderAlive)
+                StatusLine("تصريح Shizuku", caps.shizukuPermissionGranted)
+                StatusLine("Root مكتشف", caps.rootDetected)
+                StatusLine("Root قابل للاستخدام", caps.rootUsable)
+                StatusLine("Foreground service", caps.foregroundServiceReady)
+                StatusLine("Storage Access Framework", caps.storageAccessFrameworkReady)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onOpenAccessibility) { Text("إمكانية الوصول") }
                     OutlinedButton(onClick = onOpenOverlay) { Text("الزر العائم") }
-                    OutlinedButton(onClick = onOpenShizuku) { Text("Shizuku") }
+                    if (caps.shizukuInstalled && !caps.shizukuPermissionGranted) {
+                        OutlinedButton(onClick = vm::requestShizukuPermission) { Text("تصريح Shizuku") }
+                    }
                 }
-                OutlinedButton(onClick = vm::retryEngineProbes, modifier = Modifier.fillMaxWidth()) { Text("إعادة فحص المحركات") }
             }
         }
     }
@@ -405,12 +553,12 @@ private fun InstanceSelector(instances: List<com.waalothmany.linkbot.data.WhatsA
     val selected = instances.firstOrNull { it.id == selectedId }
     Box {
         OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-            Text(selected?.let { "${it.label} • ${it.profileType} • User ${it.androidUserId}${if (it.enabled) "" else " • غير متاح"}" } ?: "لم يتم اكتشاف واتساب متاح", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(selected?.let { "${it.label} • ${it.kind}${if (it.enabled) "" else " • غير متاح"}" } ?: "لم يتم اكتشاف واتساب متاح", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             instances.forEach { item ->
                 DropdownMenuItem(
-                    text = { Text("${item.label} • ${item.profileType} • User ${item.androidUserId} • ${item.packageName}${if (item.enabled) "" else " • غير متاح"}") },
+                    text = { Text("${item.label} (${item.packageName})${if (item.enabled) "" else " • غير متاح في الملف الحالي"}") },
                     enabled = item.enabled,
                     onClick = { expanded = false; onSelect(item.id) },
                 )

@@ -4,7 +4,7 @@ tree = Path('app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityT
 required_service = [
     'SYNC_NAV_BACK_RECOVERY',
     'EXTRACT_NAV_BACK_RECOVERY',
-    'findFilterControl(root, GROUP_LABELS, FILTER_PEER_LABELS)',
+    'findAdaptiveControl(',
     'ExtractionSelectionPolicy.eligible',
     'UnreadTraversalPolicy.next(unreadBoundaryReached)',
     'AutomationMode.UNREAD_ONLY -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD',

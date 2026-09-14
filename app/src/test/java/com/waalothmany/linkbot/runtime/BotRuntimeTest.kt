@@ -22,12 +22,12 @@ class BotRuntimeTest {
 
     @Test
     fun pauseAndResumeRestoreSyncingPhase() {
-        BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING, "sync"))
+        BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING_GROUPS, "sync"))
         BotRuntime.pause()
         assertEquals(RuntimePhase.PAUSED, BotRuntime.state.value.phase)
 
         BotRuntime.resume()
-        assertEquals(RuntimePhase.SYNCING, BotRuntime.state.value.phase)
+        assertEquals(RuntimePhase.SYNCING_GROUPS, BotRuntime.state.value.phase)
     }
 
     @Test
@@ -40,7 +40,7 @@ class BotRuntimeTest {
 
     @Test
     fun skipIsAcceptedOnlyDuringExtraction() {
-        BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING, "sync"))
+        BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING_GROUPS, "sync"))
         BotRuntime.skip()
         assertFalse(BotRuntime.consumeSkip())
 

@@ -4,18 +4,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class RuntimePhase {
-    IDLE,
-    READY,
-    SYNCING,
-    EXTRACTING,
-    PAUSED,
-    RECOVERING,
-    COMPLETED,
-    STOPPED,
-    ERROR,
-}
-
 data class RuntimeSnapshot(
     val phase: RuntimePhase = RuntimePhase.IDLE,
     val title: String = "Idle",
@@ -45,7 +33,7 @@ object BotRuntime {
 
     fun update(value: RuntimeSnapshot) {
         mutable.value = value
-        if (!pauseRequested && value.phase in setOf(RuntimePhase.SYNCING, RuntimePhase.EXTRACTING, RuntimePhase.RECOVERING, RuntimePhase.READY)) {
+        if (!pauseRequested && value.phase in setOf(RuntimePhase.SYNCING_GROUPS_GROUPS, RuntimePhase.EXTRACTING, RuntimePhase.RECOVERING, RuntimePhase.READY)) {
             phaseBeforePause = value.phase
         }
     }
@@ -61,7 +49,7 @@ object BotRuntime {
     fun resume() {
         pauseRequested = false
         val target = when (phaseBeforePause) {
-            RuntimePhase.SYNCING, RuntimePhase.EXTRACTING, RuntimePhase.RECOVERING -> phaseBeforePause
+            RuntimePhase.SYNCING_GROUPS_GROUPS, RuntimePhase.EXTRACTING, RuntimePhase.RECOVERING -> phaseBeforePause
             else -> if (mutable.value.total > 0) RuntimePhase.EXTRACTING else RuntimePhase.READY
         }
         mutable.value = mutable.value.copy(phase = target, title = "Running")

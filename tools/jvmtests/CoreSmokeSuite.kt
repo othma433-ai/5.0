@@ -19,6 +19,7 @@ object CoreSmokeSuite {
             "com.waalothmany.linkbot.automation.SyncStrategyPolicySmokeKt",
             "com.waalothmany.linkbot.automation.ConservativeGroupRowPolicySmokeKt",
             "com.waalothmany.linkbot.automation.SearchResolutionSmokeKt",
+            "com.waalothmany.linkbot.automation.SearchEntryPolicySmokeKt",
             "com.waalothmany.linkbot.automation.CheckpointSmokeKt",
             "com.waalothmany.linkbot.automation.PerformanceProfileSmokeKt",
             "com.waalothmany.linkbot.automation.GroupIdentityMatcherSmokeKt",
@@ -30,30 +31,32 @@ object CoreSmokeSuite {
             "com.waalothmany.linkbot.automation.SyncCoveragePolicySmokeKt",
             "com.waalothmany.linkbot.automation.ScreenEvidencePolicySmokeKt",
             "com.waalothmany.linkbot.automation.AutomationHealthPolicySmokeKt",
+            "com.waalothmany.linkbot.automation.AccessibilityEventCoalescerSmokeKt",
             "com.waalothmany.linkbot.automation.MessageViewportPolicySmokeKt",
             "com.waalothmany.linkbot.automation.ContainerRolePolicySmokeKt",
             "com.waalothmany.linkbot.automation.SmartQueuePolicySmokeKt",
             "com.waalothmany.linkbot.automation.DurableViewportPolicySmokeKt",
             "com.waalothmany.linkbot.automation.FailureRecoveryPolicySmokeKt",
             "com.waalothmany.linkbot.automation.QueueProgressPolicySmokeKt",
-            "com.waalothmany.linkbot.automation.OperationLeaseSmokeKt",
-            "com.waalothmany.linkbot.automation.NavigationProbePolicySmokeKt",
             "com.waalothmany.linkbot.whatsapp.PackageCandidatePolicySmokeKt",
-            "com.waalothmany.linkbot.whatsapp.ProfileIdentitySmokeKt",
-            "com.waalothmany.linkbot.whatsapp.ProfileResolverSmokeKt",
             "com.waalothmany.linkbot.whatsapp.InstanceInventoryPolicySmokeKt",
+            "com.waalothmany.linkbot.whatsapp.InstanceIdentityPolicySmokeKt",
             "com.waalothmany.linkbot.capability.AccessibilityConnectionPolicySmokeKt",
             "com.waalothmany.linkbot.capability.OperationStartGateSmokeKt",
             "com.waalothmany.linkbot.capability.ReadinessEvaluatorSmokeKt",
             "com.waalothmany.linkbot.runtime.DiagnosticSanitizerSmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.ExecutionModelsSmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.EngineHealthSmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.ExecutionOrchestratorSmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.ExecutionVerificationSmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.shizuku.ShizukuStateSmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.accessibility.AccessibilityRuntimeStateSmokeKt",
-            "com.waalothmany.linkbot.capability.AccessibilityStartPolicySmokeKt",
-            "com.waalothmany.linkbot.runtime.engine.root.RootCommandPolicySmokeKt",
+            "com.waalothmany.linkbot.runtime.DiagnosticQueuePolicySmokeKt",
+            "com.waalothmany.linkbot.runtime.OperationLeaseSmokeKt",
+            "com.waalothmany.linkbot.data.PersistenceAccountingSmokeKt",
+            "com.waalothmany.linkbot.runtime.RuntimePhaseSmokeKt",
+            "com.waalothmany.linkbot.capability.RuntimeCapabilityModeSmokeKt",
+            "com.waalothmany.linkbot.whatsapp.AdaptiveSelectorPolicySmokeKt",
+            "com.waalothmany.linkbot.whatsapp.AdaptiveSelectorMemorySmokeKt",
+            "com.waalothmany.linkbot.whatsapp.WhatsAppAdapterRegistrySmokeKt",
+            "com.waalothmany.linkbot.whatsapp.InstanceProfileMetadataSmokeKt",
+            "com.waalothmany.linkbot.automation.GroupFilterPolicySmokeKt",
+            "com.waalothmany.linkbot.automation.QueuePersistencePolicySmokeKt",
+            "com.waalothmany.linkbot.automation.NavigationProbePolicySmokeKt",
         )
         classes.forEach { name ->
             val cls = Class.forName(name)
@@ -61,9 +64,6 @@ object CoreSmokeSuite {
                 ?: error("No zero-argument main in $name")
             method.invoke(null)
         }
-        TraceRecorderSmoke.run()
-        CapabilityPresentationSmoke.run()
-        AccessibilityEventCoalescerSmoke.run()
-        println("CoreSmokeSuite: PASS (${classes.size + 3} tests)")
+        println("CoreSmokeSuite: PASS (${classes.size} tests)")
     }
 }

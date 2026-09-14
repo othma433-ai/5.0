@@ -4,24 +4,27 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.waalothmany.linkbot.automation.AutomationMode
+import com.waalothmany.linkbot.automation.GroupFilterMode
 import com.waalothmany.linkbot.automation.PerformanceMode
 import com.waalothmany.linkbot.automation.PerformanceProfiles
 import com.waalothmany.linkbot.automation.WaAccessibilityService
-import com.waalothmany.linkbot.runtime.engine.accessibility.AccessibilityRuntimeSupervisor
+import com.waalothmany.linkbot.capability.AccessibilityConnectionMonitor
 import com.waalothmany.linkbot.capability.CapabilityManager
-import com.waalothmany.linkbot.capability.AccessibilityStartDisposition
-import com.waalothmany.linkbot.capability.AccessibilityStartPolicy
 import com.waalothmany.linkbot.capability.OperationStartBlockReason
 import com.waalothmany.linkbot.capability.OperationStartContext
 import com.waalothmany.linkbot.capability.OperationStartGate
 import com.waalothmany.linkbot.capability.ReadinessEvaluator
+import com.waalothmany.linkbot.core.exporter.AutomaticExportCoordinator
+import com.waalothmany.linkbot.core.exporter.ExportFormat
+import com.waalothmany.linkbot.core.exporter.ExportGrouping
+import com.waalothmany.linkbot.core.exporter.ExportOptions
+import com.waalothmany.linkbot.core.exporter.ExportScope
+import com.waalothmany.linkbot.data.ExportOccurrenceRow
 import com.waalothmany.linkbot.data.GroupEntity
 import com.waalothmany.linkbot.data.LinkEntity
 import com.waalothmany.linkbot.data.WhatsAppInstanceEntity
 import com.waalothmany.linkbot.runtime.BotRuntime
-import com.waalothmany.linkbot.runtime.EngineRegistry
-import com.waalothmany.linkbot.runtime.engine.ProbeState
-import com.waalothmany.linkbot.runtime.engine.shizuku.ShizukuRuntime
+import com.waalothmany.linkbot.runtime.RuntimeBootstrapPolicy
 import com.waalothmany.linkbot.runtime.DiagnosticLog
 import com.waalothmany.linkbot.runtime.RuntimePhase
 import com.waalothmany.linkbot.runtime.RuntimeSnapshot
@@ -58,6 +61,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val occurrenceCount: StateFlow<Int> = ServiceLocator.links.occurrenceCount
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    val resultOccurrences: StateFlow<List<ExportOccurrenceRow>> = db.exportDao().observeOccurrences()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val instances: StateFlow<List<WhatsAppInstanceEntity>> = db.instanceDao().observeAll()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -65,10 +70,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _capabilities = MutableStateFlow(CapabilityManager.snapshot(appContext))
     val capabilities = _capabilities.asStateFlow()
-    private val _rootProbeState = MutableStateFlow(ProbeState.UNAVAILABLE)
-    val rootProbeState = _rootProbeState.asStateFlow()
-    private val _rootFallbackEnabled = MutableStateFlow(EngineRegistry.isRootFallbackEnabled(appContext))
-    val rootFallbackEnabled = _rootFallbackEnabled.asStateFlow()
 
     val readiness = combine(_capabilities, instances) { caps, inventory ->
         ReadinessEvaluator.evaluate(
@@ -90,16 +91,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     )
     val performanceMode = _performanceMode.asStateFlow()
 
+    private val _autoResume = MutableStateFlow(prefs.getBoolean("auto_resume", true))
+    val autoResume = _autoResume.asStateFlow()
+    private val _autoRetryFailed = MutableStateFlow(prefs.getBoolean("auto_retry_failed", true))
+    val autoRetryFailed = _autoRetryFailed.asStateFlow()
+    private val _autoExport = MutableStateFlow(prefs.getBoolean(AutomaticExportCoordinator.PREF_AUTO_EXPORT, false))
+    val autoExport = _autoExport.asStateFlow()
+    private val _exportScope = MutableStateFlow(parseEnum(prefs.getString(AutomaticExportCoordinator.PREF_EXPORT_SCOPE, null), ExportScope.UNIQUE_LINKS))
+    val exportScope = _exportScope.asStateFlow()
+    private val _exportGrouping = MutableStateFlow(parseEnum(prefs.getString(AutomaticExportCoordinator.PREF_EXPORT_GROUPING, null), ExportGrouping.COMBINED))
+    val exportGrouping = _exportGrouping.asStateFlow()
+    private val _exportFormat = MutableStateFlow(parseEnum(prefs.getString(AutomaticExportCoordinator.PREF_EXPORT_FORMAT, null), ExportFormat.XLSX))
+    val exportFormat = _exportFormat.asStateFlow()
+    private val _exportDirectoryConfigured = MutableStateFlow(!prefs.getString(AutomaticExportCoordinator.PREF_EXPORT_TREE_URI, null).isNullOrBlank())
+    val exportDirectoryConfigured = _exportDirectoryConfigured.asStateFlow()
+
     init {
         viewModelScope.launch {
-            ShizukuRuntime.state.collectLatest {
+            AccessibilityConnectionMonitor.state.collectLatest { connection ->
                 _capabilities.value = CapabilityManager.snapshot(appContext)
-            }
-        }
-        viewModelScope.launch {
-            AccessibilityRuntimeSupervisor.state.collectLatest { connection ->
-                _capabilities.value = CapabilityManager.snapshot(appContext)
-                if (!connection.connected && BotRuntime.state.value.phase in ACTIVE_PHASES) {
+                if (!_capabilities.value.accessibilityConnected && BotRuntime.state.value.phase in ACTIVE_PHASES) {
                     BotRuntime.update(
                         BotRuntime.state.value.copy(
                             phase = RuntimePhase.ERROR,
@@ -116,22 +127,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshEnvironment() {
-        _capabilities.value = CapabilityManager.snapshot(appContext)
+        val bootstrapRuntime = RuntimeBootstrapPolicy.canBootstrap(BotRuntime.state.value.phase)
+        if (bootstrapRuntime) {
+            BotRuntime.update(RuntimeSnapshot(RuntimePhase.INITIALIZING, "Initializing", "Preparing runtime environment"))
+        }
         viewModelScope.launch {
+            if (bootstrapRuntime) {
+                BotRuntime.update(RuntimeSnapshot(RuntimePhase.CHECKING_CAPABILITIES, "Checking capabilities", "Inspecting Android and WhatsApp runtime"))
+            }
+            val fresh = CapabilityManager.snapshot(appContext)
+            _capabilities.value = fresh
             val now = System.currentTimeMillis()
-            val standardEntities = WhatsAppInstanceDetector.detect(appContext)
-            val privilegedEntities = runCatching { EngineRegistry.discovery.discover() }
-                .onFailure { error ->
-                    DiagnosticLog.record(
-                        "PRIVILEGED_DISCOVERY_FAILED",
-                        mapOf("error" to error.javaClass.simpleName),
-                    )
-                }
-                .getOrDefault(emptyList())
-            val detectedEntities = LinkedHashMap<Pair<Int, String>, WhatsAppInstanceEntity>().apply {
-                standardEntities.forEach { put(it.androidUserId to it.packageName, it) }
-                privilegedEntities.forEach { put(it.androidUserId to it.packageName, it) }
-            }.values.toList()
+            val detectedEntities = WhatsAppInstanceDetector.detect(appContext)
             val existingEntities = db.instanceDao().all()
             val merged = InstanceInventoryPolicy.reconcile(
                 existing = existingEntities.map { it.toInventoryItem() },
@@ -146,56 +153,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _selectedInstanceId.value = available.firstOrNull()?.id
             }
 
+            if (bootstrapRuntime && BotRuntime.state.value.phase == RuntimePhase.CHECKING_CAPABILITIES) {
+                val coreReady = fresh.coreReady
+                BotRuntime.update(
+                    RuntimeSnapshot(
+                        phase = RuntimeBootstrapPolicy.finalPhase(coreReady),
+                        title = if (coreReady) "Ready" else "Setup required",
+                        detail = when {
+                            !fresh.accessibilityEnabled -> "Enable AccessibilityService to start automation."
+                            !fresh.accessibilityConnected -> "Reconnect the AccessibilityService before automation."
+                            !fresh.foregroundServiceReady -> "Foreground service declaration is unavailable."
+                            else -> "Runtime ready • ${fresh.mode.name}"
+                        },
+                        error = if (coreReady) null else "CAPABILITY_SETUP_REQUIRED",
+                    )
+                )
+            }
+
             DiagnosticLog.record(
                 "ENVIRONMENT_REFRESHED",
                 mapOf(
                     "instances" to available.size,
-                    "a11yEnabled" to _capabilities.value.accessibilityEnabled,
-                    "a11yConnected" to _capabilities.value.accessibilityConnected,
-                    "notifications" to _capabilities.value.notifications,
-                    "overlay" to _capabilities.value.overlay,
-                    "shizukuInstalled" to _capabilities.value.shizukuInstalled,
+                    "a11yEnabled" to fresh.accessibilityEnabled,
+                    "a11yConnected" to fresh.accessibilityConnected,
+                    "notifications" to fresh.notifications,
+                    "overlay" to fresh.overlay,
+                    "mode" to fresh.mode.name,
+                    "shizukuInstalled" to fresh.shizukuInstalled,
+                    "shizukuUsable" to fresh.shizukuUsable,
+                    "rootUsable" to fresh.rootUsable,
                 ),
             )
-            refreshPrivilegedEngineState()
         }
     }
 
     fun requestShizukuPermission() {
-        val requested = ShizukuRuntime.requestPermission()
-        DiagnosticLog.record("SHIZUKU_PERMISSION_REQUEST", mapOf("requested" to requested))
-        _capabilities.value = CapabilityManager.snapshot(appContext)
-    }
-
-    fun setRootFallbackEnabled(enabled: Boolean) {
-        EngineRegistry.setRootFallbackEnabled(appContext, enabled)
-        _rootFallbackEnabled.value = enabled
-        _capabilities.value = CapabilityManager.snapshot(appContext)
-        viewModelScope.launch { refreshPrivilegedEngineState() }
-    }
-
-    fun retryEngineProbes() {
-        ShizukuRuntime.refresh()
-        viewModelScope.launch { refreshPrivilegedEngineState() }
-    }
-
-    private suspend fun refreshPrivilegedEngineState() {
-        _rootFallbackEnabled.value = EngineRegistry.isRootFallbackEnabled(appContext)
-        _rootProbeState.value = if (_rootFallbackEnabled.value) {
-            runCatching { EngineRegistry.probeRoot().state }.getOrDefault(ProbeState.ERROR)
-        } else {
-            ProbeState.UNAVAILABLE
-        }
-        _capabilities.value = CapabilityManager.snapshot(appContext)
-        DiagnosticLog.record(
-            "ENGINE_READINESS_REFRESHED",
-            mapOf(
-                "shizukuState" to _capabilities.value.shizukuState,
-                "shizukuReady" to _capabilities.value.shizukuReady,
-                "rootEnabled" to _rootFallbackEnabled.value,
-                "rootProbe" to _rootProbeState.value.name,
-            ),
-        )
+        val requested = CapabilityManager.requestShizukuPermission()
+        DiagnosticLog.record("SHIZUKU_PERMISSION_REQUEST", mapOf("dispatched" to requested))
+        refreshEnvironment()
     }
 
     fun selectInstance(id: String) {
@@ -211,7 +206,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             rejectStart(OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED)
             return
         }
-        service.startGroupSync(instance!!.id, instance.packageName)
+        service.startGroupSync(instance!!)
     }
 
     fun startExtraction(mode: AutomationMode) {
@@ -221,7 +216,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             rejectStart(OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED)
             return
         }
-        service.startExtraction(instance!!.id, instance.packageName, mode)
+        service.startExtraction(instance!!, mode)
     }
 
     private fun selectedAvailableInstance(): WhatsAppInstanceEntity? =
@@ -230,34 +225,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun allowOperationStart(instance: WhatsAppInstanceEntity?): Boolean {
         val fresh = CapabilityManager.snapshot(appContext)
         _capabilities.value = fresh
-
-        when (AccessibilityStartPolicy.evaluate(AccessibilityRuntimeSupervisor.state.value, System.currentTimeMillis())) {
-            AccessibilityStartDisposition.WAIT_FOR_BIND -> {
-                DiagnosticLog.record("OPERATION_START_WAITING_ACCESSIBILITY_BIND")
-                BotRuntime.update(
-                    RuntimeSnapshot(
-                        phase = RuntimePhase.READY,
-                        title = "Connecting Accessibility…",
-                        detail = "Android has enabled the service; waiting for the service binder.",
-                        error = null,
-                    )
-                )
-                return false
-            }
-            AccessibilityStartDisposition.REQUIRE_USER_ACTION -> {
-                rejectStart(
-                    if (!fresh.accessibilityEnabled) OperationStartBlockReason.ACCESSIBILITY_DISABLED
-                    else OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED
-                )
-                return false
-            }
-            AccessibilityStartDisposition.ALLOW -> Unit
-        }
-
         val decision = OperationStartGate.evaluate(
             OperationStartContext(
                 instanceSelected = instance != null,
-                packageLaunchable = instance?.reachable == true,
+                packageLaunchable = instance?.let {
+                    WhatsAppInstanceDetector.isLaunchable(appContext, it)
+                } == true,
                 accessibilityEnabled = fresh.accessibilityEnabled,
                 accessibilityConnected = fresh.accessibilityConnected,
                 notificationsReady = fresh.notifications,
@@ -297,6 +270,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun selectActive() = withSelectedInstance { ServiceLocator.groups.selectActive(it) }
     fun selectNeverScanned() = withSelectedInstance { ServiceLocator.groups.selectNeverScanned(it) }
     fun selectFailed() = withSelectedInstance { ServiceLocator.groups.selectFailed(it) }
+    fun selectCompleted() = withSelectedInstance { ServiceLocator.groups.selectCompleted(it) }
+    fun selectPending() = withSelectedInstance { ServiceLocator.groups.selectPending(it) }
+    fun selectNew() = withSelectedInstance { ServiceLocator.groups.selectNew(it) }
+    fun invertSelection() = withSelectedInstance { ServiceLocator.groups.invertSelection(it) }
+    fun selectCurrentFilter(filter: GroupFilterMode) = withSelectedInstance { ServiceLocator.groups.selectCurrentFilter(it, filter) }
     fun setSelected(group: GroupEntity, selected: Boolean) = viewModelScope.launch {
         ServiceLocator.groups.setSelected(group.id, selected)
     }
@@ -315,11 +293,56 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _performanceMode.value = value
     }
 
+    fun setAutoResume(value: Boolean) {
+        prefs.edit().putBoolean("auto_resume", value).apply()
+        _autoResume.value = value
+    }
+
+    fun setAutoRetryFailed(value: Boolean) {
+        prefs.edit().putBoolean("auto_retry_failed", value).apply()
+        _autoRetryFailed.value = value
+    }
+
+    fun setAutoExport(value: Boolean) {
+        prefs.edit().putBoolean(AutomaticExportCoordinator.PREF_AUTO_EXPORT, value).apply()
+        _autoExport.value = value
+    }
+
+    fun setExportScope(value: ExportScope) {
+        prefs.edit().putString(AutomaticExportCoordinator.PREF_EXPORT_SCOPE, value.name).apply()
+        _exportScope.value = value
+    }
+
+    fun setExportGrouping(value: ExportGrouping) {
+        prefs.edit().putString(AutomaticExportCoordinator.PREF_EXPORT_GROUPING, value.name).apply()
+        _exportGrouping.value = value
+    }
+
+    fun setExportFormat(value: ExportFormat) {
+        prefs.edit().putString(AutomaticExportCoordinator.PREF_EXPORT_FORMAT, value.name).apply()
+        _exportFormat.value = value
+    }
+
+    fun setExportDirectory(uri: String?) {
+        prefs.edit().putString(AutomaticExportCoordinator.PREF_EXPORT_TREE_URI, uri).apply()
+        _exportDirectoryConfigured.value = !uri.isNullOrBlank()
+    }
+
+    fun currentExportOptions(formatOverride: ExportFormat? = null): ExportOptions = ExportOptions(
+        format = formatOverride ?: _exportFormat.value,
+        scope = _exportScope.value,
+        grouping = _exportGrouping.value,
+        autoAfterSession = _autoExport.value,
+    )
+
     fun pause() = WaAccessibilityService.instance?.pauseAutomation() ?: BotRuntime.pause()
     fun resume() = WaAccessibilityService.instance?.resumeAutomation() ?: BotRuntime.resume()
     fun stop() = WaAccessibilityService.instance?.stopAutomation() ?: BotRuntime.stop()
     fun skip() = WaAccessibilityService.instance?.skipCurrent() ?: BotRuntime.skip()
     fun retryFailed() = WaAccessibilityService.instance?.retryFailed() ?:
+        rejectStart(OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED)
+
+    fun resumePending() = WaAccessibilityService.instance?.resumePending() ?:
         rejectStart(OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED)
 
     private fun WhatsAppInstanceEntity.toInventoryItem() = InstanceInventoryItem(
@@ -329,13 +352,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         kind = kind,
         enabled = enabled,
         lastSeenAt = lastSeenAt,
-        androidUserId = androidUserId,
-        profileType = profileType,
-        profileLabel = profileLabel,
-        launchStrategy = launchStrategy,
-        lastResolvedEngine = lastResolvedEngine,
-        reachable = reachable,
-        lastSuccessfulLaunchAt = lastSuccessfulLaunchAt,
+        profileIdentity = profileIdentity,
+        installationIdentity = installationIdentity,
+        profileSerial = profileSerial,
+        adapterId = adapterId,
+        discoveryEvidence = discoveryEvidence,
     )
 
     private fun InstanceInventoryItem.toEntity() = WhatsAppInstanceEntity(
@@ -343,20 +364,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         packageName = packageName,
         label = label,
         kind = kind,
-        androidUserId = androidUserId,
-        profileType = profileType,
-        profileLabel = profileLabel,
-        launchStrategy = launchStrategy,
-        lastResolvedEngine = lastResolvedEngine,
-        reachable = reachable,
-        lastSuccessfulLaunchAt = lastSuccessfulLaunchAt,
+        profileIdentity = profileIdentity,
+        installationIdentity = installationIdentity,
+        profileSerial = profileSerial,
+        adapterId = adapterId,
+        discoveryEvidence = discoveryEvidence,
         enabled = enabled,
         lastSeenAt = lastSeenAt,
     )
 
+    private inline fun <reified T : Enum<T>> parseEnum(value: String?, fallback: T): T =
+        enumValues<T>().firstOrNull { it.name == value } ?: fallback
+
     companion object {
         private val ACTIVE_PHASES = setOf(
-            RuntimePhase.SYNCING,
+            RuntimePhase.SYNCING_GROUPS,
             RuntimePhase.EXTRACTING,
             RuntimePhase.PAUSED,
             RuntimePhase.RECOVERING,

@@ -56,7 +56,7 @@ class BotForegroundService : Service() {
         .setContentText(state.detail.ifBlank { state.phase.name })
         .setSubText("Health ${state.healthScore}% • ${state.effectiveMode} • ${state.groupsPerMinute.toInt()} grp/min")
         .setProgress(state.total.coerceAtLeast(0), state.current.coerceAtLeast(0), state.total <= 0)
-        .setOngoing(state.phase in setOf(RuntimePhase.SYNCING, RuntimePhase.EXTRACTING, RuntimePhase.PAUSED, RuntimePhase.RECOVERING))
+        .setOngoing(state.phase in setOf(RuntimePhase.SYNCING_GROUPS, RuntimePhase.EXTRACTING, RuntimePhase.PAUSED, RuntimePhase.RECOVERING))
         .setOnlyAlertOnce(true)
         .setContentIntent(PendingIntent.getActivity(
             this,

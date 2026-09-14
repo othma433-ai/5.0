@@ -15,7 +15,7 @@ fun main() {
     check(ready.coreReady) { ready.toString() }
     check(ready.blockers.isEmpty()) { ready.toString() }
     check("Overlay optional" in ready.notes)
-    check(ready.executionMode == "ADAPTIVE_MULTI_ENGINE") { ready.toString() }
+    check(ready.executionMode == "STANDARD") { ready.toString() }
 
 
     val notificationsOptional = ReadinessEvaluator.evaluate(
@@ -45,8 +45,8 @@ fun main() {
     )
     check(!enabledButDisconnected.coreReady)
     check(enabledButDisconnected.blockers.contains("Accessibility service not connected"))
-    check(enabledButDisconnected.notes.contains("Shizuku detected; Binder/permission readiness is verified at runtime"))
-    check(enabledButDisconnected.executionMode == "ADAPTIVE_MULTI_ENGINE")
+    check(enabledButDisconnected.notes.contains("Shizuku detected; permission/binder not ready"))
+    check(enabledButDisconnected.executionMode == "STANDARD")
 
     val disabled = ReadinessEvaluator.evaluate(
         CapabilityFlags(
@@ -63,8 +63,26 @@ fun main() {
     check(disabled.blockers.contains("Accessibility disabled"))
     check("Notifications recommended" in disabled.notes)
     check(disabled.blockers.contains("No WhatsApp instance detected"))
-    check(disabled.notes.contains("Root detected; readiness requires an execution probe"))
-    check(disabled.executionMode == "ADAPTIVE_MULTI_ENGINE")
+    check(disabled.notes.contains("Root binary detected; usable root permission not proven"))
+    check(disabled.executionMode == "STANDARD")
+
+    val shizukuEnhanced = ReadinessEvaluator.evaluate(
+        CapabilityFlags(
+            accessibilityEnabled = true, accessibilityConnected = true, overlay = true, notifications = true,
+            shizukuInstalled = true, shizukuUsable = true, rootDetected = false, rootUsable = false,
+        ),
+        whatsappInstances = 1,
+    )
+    check(shizukuEnhanced.executionMode == "SHIZUKU_ENHANCED")
+
+    val rootEnhanced = ReadinessEvaluator.evaluate(
+        CapabilityFlags(
+            accessibilityEnabled = true, accessibilityConnected = true, overlay = true, notifications = true,
+            shizukuInstalled = false, shizukuUsable = false, rootDetected = true, rootUsable = true,
+        ),
+        whatsappInstances = 1,
+    )
+    check(rootEnhanced.executionMode == "ROOT_ENHANCED")
 
     println("ReadinessEvaluatorSmoke: PASS")
 }

@@ -15,7 +15,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.waalothmany.linkbot.core.exporter.ExportDirectoryWriter
 import com.waalothmany.linkbot.core.exporter.ExportFormat
+import com.waalothmany.linkbot.core.exporter.ExportGrouping
 import com.waalothmany.linkbot.core.exporter.ExportUseCase
 import com.waalothmany.linkbot.core.importer.ImportChatUseCase
 import com.waalothmany.linkbot.ui.LinkBotApp
@@ -27,6 +29,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     private var pendingExport: ExportFormat = ExportFormat.XLSX
+    private var pendingDirectoryExport: Boolean = false
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         viewModel.refreshEnvironment()
@@ -38,6 +41,20 @@ class MainActivity : ComponentActivity() {
 
     private val exportLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null) writeExport(uri, pendingExport)
+    }
+
+    private val exportDirectoryLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+            viewModel.setExportDirectory(uri.toString())
+            if (pendingDirectoryExport) writeExportDirectory(uri, pendingExport)
+        }
+        pendingDirectoryExport = false
     }
 
     private val diagnosticLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
@@ -54,21 +71,23 @@ class MainActivity : ComponentActivity() {
                 onOpenOverlay = {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                 },
-                onOpenShizuku = {
-                    val launch = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-                    if (launch != null) {
-                        startActivity(launch)
-                    } else {
-                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:moe.shizuku.privileged.api")))
-                    }
-                },
                 onImportChat = { importLauncher.launch(arrayOf("text/plain", "application/zip", "application/octet-stream")) },
                 onExport = { format ->
                     pendingExport = format
-                    exportLauncher.launch("wa-links-${System.currentTimeMillis()}.${format.extension}")
+                    val options = viewModel.currentExportOptions(format)
+                    if (options.grouping == ExportGrouping.PER_GROUP) {
+                        pendingDirectoryExport = true
+                        exportDirectoryLauncher.launch(null)
+                    } else {
+                        exportLauncher.launch("wa-links-${System.currentTimeMillis()}.${format.extension}")
+                    }
                 },
                 onExportDiagnostics = {
                     diagnosticLauncher.launch("wa-link-bot-diagnostics-${System.currentTimeMillis()}.txt")
+                },
+                onChooseExportDirectory = {
+                    pendingDirectoryExport = false
+                    exportDirectoryLauncher.launch(null)
                 },
             )
         }
@@ -103,10 +122,24 @@ class MainActivity : ComponentActivity() {
     private fun writeExport(uri: Uri, format: ExportFormat) {
         lifecycleScope.launch {
             runCatching {
-                val bytes = withContext(Dispatchers.IO) { ExportUseCase.build(format) }
-                contentResolver.openOutputStream(uri, "w")?.use { it.write(bytes) } ?: error("Unable to open export destination")
+                val options = viewModel.currentExportOptions(format).copy(grouping = ExportGrouping.COMBINED)
+                val artifact = withContext(Dispatchers.IO) { ExportUseCase.buildArtifacts(options).single() }
+                contentResolver.openOutputStream(uri, "w")?.use { it.write(artifact.bytes) } ?: error("Unable to open export destination")
             }.onSuccess {
                 Toast.makeText(this@MainActivity, "تم التصدير", Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(this@MainActivity, "فشل التصدير: ${it.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun writeExportDirectory(treeUri: Uri, format: ExportFormat) {
+        lifecycleScope.launch {
+            runCatching {
+                val options = viewModel.currentExportOptions(format).copy(grouping = ExportGrouping.PER_GROUP)
+                ExportDirectoryWriter.writeArtifacts(this@MainActivity, treeUri, options)
+            }.onSuccess { paths ->
+                Toast.makeText(this@MainActivity, "تم تصدير ${paths.size} ملف", Toast.LENGTH_SHORT).show()
             }.onFailure {
                 Toast.makeText(this@MainActivity, "فشل التصدير: ${it.message}", Toast.LENGTH_LONG).show()
             }

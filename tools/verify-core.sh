@@ -26,8 +26,12 @@ kotlinc \
   app/src/main/java/com/waalothmany/linkbot/automation/SyncStrategyPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/ConservativeGroupRowPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/SearchResolutionPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/automation/SearchEntryPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/CheckpointCodec.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/PerformanceProfile.kt \
+  app/src/main/java/com/waalothmany/linkbot/automation/NavigationProbePolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/automation/GroupFilterPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/automation/QueuePersistencePolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/GroupIdentityMatcher.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/FilterVerificationPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/RowClassificationPolicy.kt \
@@ -37,37 +41,30 @@ kotlinc \
   app/src/main/java/com/waalothmany/linkbot/automation/SyncCoveragePolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/ScreenEvidencePolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/AutomationHealthPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityEventCoalescer.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/MessageViewportPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/ContainerRolePolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/SmartQueuePolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/DurableViewportPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/FailureRecoveryPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/automation/QueueProgressPolicy.kt \
-  app/src/main/java/com/waalothmany/linkbot/automation/OperationLease.kt \
-  app/src/main/java/com/waalothmany/linkbot/automation/NavigationProbePolicy.kt \
-  app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityEventCoalescer.kt \
   app/src/main/java/com/waalothmany/linkbot/whatsapp/PackageCandidatePolicy.kt \
-  app/src/main/java/com/waalothmany/linkbot/whatsapp/InstanceIdentityPolicy.kt \
-  app/src/main/java/com/waalothmany/linkbot/whatsapp/ProfileAwareInstanceResolver.kt \
   app/src/main/java/com/waalothmany/linkbot/whatsapp/InstanceInventoryPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/InstanceIdentityPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/AdaptiveSelectorPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/AdaptiveSelectorMemory.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/WhatsAppAdapter.kt \
+  app/src/main/java/com/waalothmany/linkbot/whatsapp/WhatsAppAdapterRegistry.kt \
   app/src/main/java/com/waalothmany/linkbot/capability/AccessibilityConnectionPolicy.kt \
   app/src/main/java/com/waalothmany/linkbot/capability/OperationStartGate.kt \
   app/src/main/java/com/waalothmany/linkbot/capability/ReadinessEvaluator.kt \
-  app/src/main/java/com/waalothmany/linkbot/capability/CapabilityPresentation.kt \
+  app/src/main/java/com/waalothmany/linkbot/capability/RuntimeCapabilityMode.kt \
   app/src/main/java/com/waalothmany/linkbot/runtime/DiagnosticSanitizer.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/trace/ExecutionTrace.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/trace/TraceRecorder.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionModels.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionEngine.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionPostconditionVerifier.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/EngineHealthMonitor.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/EngineCircuitBreaker.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/OperationPlanner.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/ExecutionOrchestrator.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/shizuku/ShizukuState.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/accessibility/AccessibilityRuntimeState.kt \
-  app/src/main/java/com/waalothmany/linkbot/runtime/engine/root/RootCommandPolicy.kt \
-  app/src/main/java/com/waalothmany/linkbot/capability/AccessibilityStartPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/DiagnosticQueuePolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/OperationLease.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/RuntimePhase.kt \
+  app/src/main/java/com/waalothmany/linkbot/runtime/RuntimeBootstrapPolicy.kt \
+  app/src/main/java/com/waalothmany/linkbot/data/PersistenceAccounting.kt \
   tools/jvmtests/LinkEngineSmoke.kt \
   tools/jvmtests/ExportChatParserSmoke.kt \
   tools/jvmtests/ExporterSmoke.kt \
@@ -82,6 +79,7 @@ kotlinc \
   tools/jvmtests/SyncStrategyPolicySmoke.kt \
   tools/jvmtests/ConservativeGroupRowPolicySmoke.kt \
   tools/jvmtests/SearchResolutionSmoke.kt \
+  tools/jvmtests/SearchEntryPolicySmoke.kt \
   tools/jvmtests/CheckpointSmoke.kt \
   tools/jvmtests/PerformanceProfileSmoke.kt \
   tools/jvmtests/GroupIdentityMatcherSmoke.kt \
@@ -93,33 +91,32 @@ kotlinc \
   tools/jvmtests/SyncCoveragePolicySmoke.kt \
   tools/jvmtests/ScreenEvidencePolicySmoke.kt \
   tools/jvmtests/AutomationHealthPolicySmoke.kt \
+  tools/jvmtests/AccessibilityEventCoalescerSmoke.kt \
   tools/jvmtests/MessageViewportPolicySmoke.kt \
   tools/jvmtests/ContainerRolePolicySmoke.kt \
   tools/jvmtests/SmartQueuePolicySmoke.kt \
   tools/jvmtests/DurableViewportPolicySmoke.kt \
   tools/jvmtests/FailureRecoveryPolicySmoke.kt \
   tools/jvmtests/QueueProgressPolicySmoke.kt \
-  tools/jvmtests/OperationLeaseSmoke.kt \
-  tools/jvmtests/NavigationProbePolicySmoke.kt \
   tools/jvmtests/PackageCandidatePolicySmoke.kt \
-  tools/jvmtests/ProfileIdentitySmoke.kt \
-  tools/jvmtests/ProfileResolverSmoke.kt \
   tools/jvmtests/InstanceInventoryPolicySmoke.kt \
+  tools/jvmtests/InstanceIdentityPolicySmoke.kt \
   tools/jvmtests/AccessibilityConnectionPolicySmoke.kt \
   tools/jvmtests/OperationStartGateSmoke.kt \
   tools/jvmtests/ReadinessEvaluatorSmoke.kt \
-  tools/jvmtests/CapabilityPresentationSmoke.kt \
   tools/jvmtests/DiagnosticSanitizerSmoke.kt \
-  tools/jvmtests/ExecutionModelsSmoke.kt \
-  tools/jvmtests/EngineHealthSmoke.kt \
-  tools/jvmtests/ExecutionOrchestratorSmoke.kt \
-  tools/jvmtests/ExecutionVerificationSmoke.kt \
-  tools/jvmtests/TraceRecorderSmoke.kt \
-  tools/jvmtests/ShizukuStateSmoke.kt \
-  tools/jvmtests/AccessibilityRuntimeStateSmoke.kt \
-  tools/jvmtests/AccessibilityStartPolicySmoke.kt \
-  tools/jvmtests/AccessibilityEventCoalescerSmoke.kt \
-  tools/jvmtests/RootCommandPolicySmoke.kt \
+  tools/jvmtests/DiagnosticQueuePolicySmoke.kt \
+  tools/jvmtests/OperationLeaseSmoke.kt \
+  tools/jvmtests/PersistenceAccountingSmoke.kt \
+  tools/jvmtests/RuntimePhaseSmoke.kt tools/jvmtests/RuntimeBootstrapPolicySmoke.kt \
+  tools/jvmtests/RuntimeCapabilityModeSmoke.kt \
+  tools/jvmtests/AdaptiveSelectorPolicySmoke.kt \
+  tools/jvmtests/AdaptiveSelectorMemorySmoke.kt \
+  tools/jvmtests/WhatsAppAdapterRegistrySmoke.kt \
+  tools/jvmtests/InstanceProfileMetadataSmoke.kt \
+  tools/jvmtests/GroupFilterPolicySmoke.kt \
+  tools/jvmtests/QueuePersistencePolicySmoke.kt \
+  tools/jvmtests/NavigationProbePolicySmoke.kt \
   tools/jvmtests/CoreSmokeSuite.kt \
   -include-runtime -d "$OUT/core.jar"
 
@@ -156,11 +153,11 @@ echo "[3/3] Production-hardening source invariants"
 python - <<'PY'
 from pathlib import Path
 checks = {
-  'app/build.gradle.kts': ['versionCode = 73', 'versionName = "7.3.0-rc1"'],
+  'app/build.gradle.kts': ['versionCode = 71', 'versionName = "7.1.0-rc1"'],
   'app/src/main/AndroidManifest.xml': ['android:allowBackup="false"', 'WaAccessibilityService', 'BotForegroundService', 'OverlayControllerService'],
   'app/src/main/java/com/waalothmany/linkbot/automation/AccessibilityTree.kt': ['URLSpan', 'getSpans', 'screenEvidence', 'messageViewport', 'bestConversationScrollable', 'bestMessageScrollable'],
   'app/src/main/java/com/waalothmany/linkbot/automation/WaAccessibilityService.kt': [
-      'EndOfListGuard', 'SYNC_STRATEGY_SWITCH', 'SYNC_SELECT_ALL_APPLIED', 'ALL_CHATS_CLASSIFY', 'AMBIGUOUS_GROUP', 'STAGE_TIMEOUT', 'STAGE_RETRY', 'recordBatch', 'GroupIdentityMatcher', 'CheckpointCodec', 'ViewportIdentityPolicy', 'GROUP_FILTER_VERIFIED', 'AdaptiveTimingPolicy', 'StageCircuitBreaker', 'SYNC_COVERAGE_SAFETY_STOP', 'AutomationHealthPolicy', 'MessageViewportPolicy', 'ThroughputMeter', 'ScreenKind.GROUP_LIST', 'SmartQueuePolicy', 'DurableViewportPolicy', 'FailureRecoveryPolicy', 'QueueProgressPolicy', 'OperationLease', 'NavigationProbePolicy', 'VIEWPORT_PERSISTENCE_FAILED', 'SYNC_NAV_DECISION', 'EXTRACT_NAV_DECISION', 'LINK_PERSISTED', 'clickTarget', 'longClickTarget', 'BACK_TOWARD_CHATS', 'UnreadTraversalPolicy', 'ExtractionSelectionPolicy', 'findFilterControl',
+      'EndOfListGuard', 'SYNC_STRATEGY_SWITCH', 'SYNC_SELECT_ALL_APPLIED', 'ALL_CHATS_CLASSIFY', 'AMBIGUOUS_GROUP', 'STAGE_TIMEOUT', 'STAGE_RETRY', 'recordBatch', 'GroupIdentityMatcher', 'CheckpointCodec', 'ViewportIdentityPolicy', 'GROUP_FILTER_VERIFIED', 'AdaptiveTimingPolicy', 'StageCircuitBreaker', 'SYNC_COVERAGE_SAFETY_STOP', 'AutomationHealthPolicy', 'MessageViewportPolicy', 'ThroughputMeter', 'ScreenKind.GROUP_LIST', 'SmartQueuePolicy', 'DurableViewportPolicy', 'FailureRecoveryPolicy', 'QueueProgressPolicy', 'VIEWPORT_PERSISTENCE_FAILED', 'SYNC_NAV_DECISION', 'EXTRACT_NAV_DECISION', 'LINK_PERSISTED', 'clickTarget', 'longClickTarget', 'BACK_TOWARD_CHATS', 'UnreadTraversalPolicy', 'ExtractionSelectionPolicy', 'findFilterControl',
   ],
   'app/src/main/java/com/waalothmany/linkbot/data/AppDatabase.kt': ['version = 3', 'MIGRATION_1_2', 'MIGRATION_2_3'],
   'app/src/main/java/com/waalothmany/linkbot/data/Repositories.kt': ['withTransaction', 'recordBatch', 'selected(instanceId: String)'],

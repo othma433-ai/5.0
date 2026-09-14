@@ -7,46 +7,33 @@ data class InstanceInventoryItem(
     val kind: String,
     val enabled: Boolean,
     val lastSeenAt: Long,
-    val androidUserId: Int = 0,
-    val profileType: String = "PERSONAL",
-    val profileLabel: String? = null,
-    val launchStrategy: String = "STANDARD",
-    val lastResolvedEngine: String? = null,
-    val reachable: Boolean = true,
-    val lastSuccessfulLaunchAt: Long? = null,
+    val profileIdentity: String = InstanceIdentityPolicy.DEFAULT_PROFILE_IDENTITY,
+    val installationIdentity: String = InstanceIdentityPolicy.DEFAULT_INSTALLATION_IDENTITY,
+    val profileSerial: Long? = null,
+    val adapterId: String = "generic-discoverable",
+    val discoveryEvidence: String = "CURRENT_PROFILE_PACKAGE",
 )
 
 object InstanceInventoryPolicy {
-    private data class IdentityKey(val userId: Int, val packageName: String)
-
     fun reconcile(
         existing: List<InstanceInventoryItem>,
         detected: List<InstanceInventoryItem>,
         nowMs: Long,
     ): List<InstanceInventoryItem> {
-        val detectedByKey = detected.associateBy { it.key() }
-        val existingByKey = existing.associateBy { it.key() }
-
+        val detectedById = detected.associateBy { it.id }
         val merged = existing.map { old ->
-            val fresh = detectedByKey[old.key()]
+            val fresh = detectedById[old.id]
             if (fresh != null) {
-                // Preserve the durable database ID for rows migrated from v7.2.
-                fresh.copy(id = old.id, enabled = true, lastSeenAt = nowMs)
+                fresh.copy(enabled = true, lastSeenAt = nowMs)
             } else {
-                old.copy(enabled = false, reachable = false)
+                old.copy(enabled = false)
             }
         }.toMutableList()
 
-        detected.filterNot { it.key() in existingByKey }.forEach { fresh ->
+        val existingIds = existing.mapTo(hashSetOf()) { it.id }
+        detected.filterNot { it.id in existingIds }.forEach { fresh ->
             merged += fresh.copy(enabled = true, lastSeenAt = nowMs)
         }
-
-        return merged.sortedWith(
-            compareByDescending<InstanceInventoryItem> { it.enabled }
-                .thenBy { it.androidUserId }
-                .thenBy { it.label.lowercase() }
-        )
+        return merged.sortedWith(compareByDescending<InstanceInventoryItem> { it.enabled }.thenBy { it.label.lowercase() })
     }
-
-    private fun InstanceInventoryItem.key() = IdentityKey(androidUserId, packageName.trim().lowercase())
 }

@@ -1,50 +1,53 @@
 package com.waalothmany.linkbot.automation
 
-import java.util.ArrayDeque
+enum class AccessibilityEventClass {
+    WINDOW_STATE,
+    WINDOW_CONTENT_CHANGED,
+    OTHER,
+}
 
-enum class EventSignalKind { CONTENT, SCROLL, WINDOW_STATE, CLICK, OTHER }
+/** Bounded event-pressure guard; never suppresses window state transitions. */
+class AccessibilityEventCoalescer(private val contentWindowMs: Long = 120L) {
+    init { require(contentWindowMs >= 0L) }
 
-data class AccessibilityEventSignal(
-    val packageName: String,
-    val eventType: Int,
-    val kind: EventSignalKind,
-)
-
-class AccessibilityEventCoalescer(
-    private val capacity: Int = 4,
-) {
-    init { require(capacity >= 1) }
-
-    private val queue = ArrayDeque<AccessibilityEventSignal>(capacity)
+    private var lastContentAcceptedAtMs: Long? = null
+    private var lastContentGeneration: Long? = null
+    private var lastContentWindowId: Int? = null
 
     @Synchronized
-    fun offer(signal: AccessibilityEventSignal) {
-        if (signal.kind == EventSignalKind.CONTENT) {
-            val retained = queue.filterNot {
-                it.kind == EventSignalKind.CONTENT && it.packageName == signal.packageName
-            }
-            queue.clear()
-            retained.forEach(queue::addLast)
+    fun shouldProcess(
+        eventClass: AccessibilityEventClass,
+        nowMs: Long,
+        operationGeneration: Long?,
+        windowId: Int?,
+    ): Boolean = when (eventClass) {
+        AccessibilityEventClass.WINDOW_STATE -> {
+            resetContentState()
+            true
         }
-        while (queue.size >= capacity) {
-            val contentIndex = queue.indexOfFirst { it.kind == EventSignalKind.CONTENT }
-            if (contentIndex >= 0) {
-                val rebuilt = queue.toMutableList().also { it.removeAt(contentIndex) }
-                queue.clear()
-                rebuilt.forEach(queue::addLast)
+        AccessibilityEventClass.OTHER -> true
+        AccessibilityEventClass.WINDOW_CONTENT_CHANGED -> {
+            val previousAt = lastContentAcceptedAtMs
+            val sameContext = lastContentGeneration == operationGeneration &&
+                lastContentWindowId == windowId
+            val withinWindow = previousAt != null && nowMs - previousAt < contentWindowMs
+            if (sameContext && withinWindow) {
+                false
             } else {
-                queue.removeFirst()
+                lastContentAcceptedAtMs = nowMs
+                lastContentGeneration = operationGeneration
+                lastContentWindowId = windowId
+                true
             }
         }
-        queue.addLast(signal)
     }
 
     @Synchronized
-    fun poll(): AccessibilityEventSignal? = if (queue.isEmpty()) null else queue.removeFirst()
+    fun reset() = resetContentState()
 
-    @Synchronized
-    fun clear() = queue.clear()
-
-    @Synchronized
-    fun size(): Int = queue.size
+    private fun resetContentState() {
+        lastContentAcceptedAtMs = null
+        lastContentGeneration = null
+        lastContentWindowId = null
+    }
 }

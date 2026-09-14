@@ -1,9 +1,9 @@
 package com.waalothmany.linkbot.automation
 
 /**
- * Bounded fallback polling for navigation stages. Accessibility events remain the
- * primary driver; these probes only recover when an OEM/WhatsApp build does not
- * emit a usable event after an action.
+ * Bounded fallback polling for navigation stages. Accessibility events remain
+ * the primary driver; these probes only recover when a device/WhatsApp build
+ * does not emit a usable event after an action.
  */
 object NavigationProbePolicy {
     private data class Config(

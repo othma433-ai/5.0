@@ -12,8 +12,8 @@ class GroupRepository(private val db: AppDatabase) {
         if (items.isEmpty()) return
         db.withTransaction {
             val dao = db.groupDao()
-            dao.insertIgnore(items)
-            items.forEach { item ->
+            val insertResults = dao.insertIgnore(items)
+            items.forEachIndexed { index, item ->
                 dao.updateSyncFields(
                     id = item.id,
                     displayTitle = item.displayTitle,
@@ -21,6 +21,7 @@ class GroupRepository(private val db: AppDatabase) {
                     unread = item.unread,
                     unreadCount = item.unreadCount,
                     active = item.active,
+                    isNew = insertResults.getOrNull(index) != -1L,
                     lastPreview = item.lastPreview,
                     lastSeenAt = item.lastSeenAt,
                     syncId = item.lastSeenSyncId,
@@ -39,7 +40,40 @@ class GroupRepository(private val db: AppDatabase) {
     suspend fun selectActive(instanceId: String) { db.groupDao().clearSelection(instanceId); db.groupDao().selectActive(instanceId) }
     suspend fun selectNeverScanned(instanceId: String) { db.groupDao().clearSelection(instanceId); db.groupDao().selectNeverScanned(instanceId) }
     suspend fun selectFailed(instanceId: String) { db.groupDao().clearSelection(instanceId); db.groupDao().selectFailed(instanceId) }
+    suspend fun selectCompleted(instanceId: String) { db.groupDao().clearSelection(instanceId); db.groupDao().selectCompleted(instanceId) }
+    suspend fun selectPending(instanceId: String) { db.groupDao().clearSelection(instanceId); db.groupDao().selectPending(instanceId) }
+    suspend fun selectNew(instanceId: String) { db.groupDao().clearSelection(instanceId); db.groupDao().selectNew(instanceId) }
+    suspend fun invertSelection(instanceId: String) = db.groupDao().invertSelection(instanceId)
+
+    suspend fun selectCurrentFilter(instanceId: String, filter: com.waalothmany.linkbot.automation.GroupFilterMode) {
+        when (filter) {
+            com.waalothmany.linkbot.automation.GroupFilterMode.ALL -> selectAll(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.UNREAD -> selectUnread(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.READ -> selectRead(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.ACTIVE -> selectActive(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.NEW -> selectNew(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.NOT_SCANNED -> selectNeverScanned(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.COMPLETED -> selectCompleted(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.FAILED -> selectFailed(instanceId)
+            com.waalothmany.linkbot.automation.GroupFilterMode.PENDING -> selectPending(instanceId)
+        }
+    }
     suspend fun updateExtraction(id: String, state: String, checkpoint: String?) = db.groupDao().updateExtraction(id, state, checkpoint)
+
+    suspend fun finalizeExtractionTransition(
+        queueId: String,
+        queueState: String,
+        attempts: Int,
+        error: String?,
+        groupId: String,
+        groupState: String,
+        checkpoint: String?,
+    ) {
+        db.withTransaction {
+            db.queueDao().updateState(queueId, queueState, attempts, error)
+            db.groupDao().updateExtraction(groupId, groupState, checkpoint)
+        }
+    }
 }
 
 data class LinkRecordRequest(
@@ -87,13 +121,16 @@ class LinkRepository(private val db: AppDatabase) {
      * This both reduces WAL churn and makes occurrence counters consistent if the
      * process is interrupted mid-batch.
      */
-    suspend fun recordBatch(requests: List<LinkRecordRequest>) {
-        if (requests.isEmpty()) return
-        db.withTransaction {
+    suspend fun recordBatch(requests: List<LinkRecordRequest>): LinkPersistResult {
+        if (requests.isEmpty()) return LinkPersistResult()
+        return db.withTransaction {
             val linkDao = db.linkDao()
             val occurrenceDao = db.occurrenceDao()
             val cache = HashMap<String, LinkEntity>()
             val now = System.currentTimeMillis()
+            var newLinks = 0
+            var insertedOccurrences = 0
+            var duplicateOccurrences = 0
 
             for (request in requests) {
                 val candidate = request.candidate
@@ -108,7 +145,8 @@ class LinkRepository(private val db: AppDatabase) {
                         lastSeenAt = now,
                         occurrenceCount = 0,
                     )
-                    linkDao.insert(created)
+                    val insertedLink = linkDao.insert(created) != -1L
+                    if (insertedLink) newLinks++
                     link = linkDao.find(candidate.canonicalUrl) ?: created
                 }
 
@@ -130,11 +168,20 @@ class LinkRepository(private val db: AppDatabase) {
                     )
                 )
                 if (inserted != -1L) {
+                    insertedOccurrences++
                     link = link.copy(lastSeenAt = now, occurrenceCount = link.occurrenceCount + 1)
                     linkDao.update(link)
+                } else {
+                    duplicateOccurrences++
                 }
                 cache[candidate.canonicalUrl] = link
             }
+
+            LinkPersistResult(
+                newLinks = newLinks,
+                insertedOccurrences = insertedOccurrences,
+                duplicateOccurrences = duplicateOccurrences,
+            )
         }
     }
 

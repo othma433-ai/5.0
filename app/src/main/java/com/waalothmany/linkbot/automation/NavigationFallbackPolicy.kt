@@ -23,7 +23,7 @@ object NavigationFallbackPolicy {
     ): NavigationFallbackAction = when {
         groupsFound -> NavigationFallbackAction.OPEN_GROUPS
         inChat -> NavigationFallbackAction.BACK_FROM_CHAT
-        chatsFound && missCount >= 4 -> NavigationFallbackAction.FALLBACK_ALL_CHATS
+        chatsFound && missCount >= 8 -> NavigationFallbackAction.FALLBACK_ALL_CHATS
         chatsFound -> NavigationFallbackAction.ANCHOR_CHATS
         !groupsFound && !chatsFound && missCount in setOf(3, 6) -> NavigationFallbackAction.BACK_TOWARD_CHATS
         else -> NavigationFallbackAction.WAIT

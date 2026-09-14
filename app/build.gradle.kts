@@ -13,8 +13,8 @@ android {
         applicationId = "com.waalothmany.linkbot"
         minSdk = 26
         targetSdk = 35
-        versionCode = 73
-        versionName = "7.3.0-rc1"
+        versionCode = 7401
+        versionName = "7.4.0-rc1-universal-adaptive"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -23,7 +23,6 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-        aidl = true
     }
 
     packaging {
@@ -66,5 +65,7 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
 }

@@ -1,41 +1,36 @@
-package com.waalothmany.linkbot.automation
+package com.waalothmany.linkbot.runtime
 
 fun main() {
-    val lease = OperationLease()
-    check(lease.current() == null)
+    val controller = OperationLeaseController()
 
-    val first = lease.acquire(AutomationRunKind.SYNC) ?: error("SYNC lease not acquired")
-    check(lease.current() == AutomationRunKind.SYNC)
-    check(lease.isActive(first))
-    check(lease.acquire(AutomationRunKind.EXTRACT) == null)
-    check(lease.acquire(AutomationRunKind.RETRY_FAILED) == null)
-    check(lease.release(first))
-    check(!lease.isActive(first))
-    check(lease.current() == null)
+    val exclusiveSync = controller.beginExclusive(OperationKind.SYNC)
+    check(exclusiveSync != null)
+    check(controller.beginExclusive(OperationKind.EXTRACTION) == null) { "second operation must be rejected while lease is active" }
+    check(controller.currentKind() == OperationKind.SYNC)
+    controller.invalidate(exclusiveSync)
 
-    val second = lease.acquire(AutomationRunKind.SYNC) ?: error("second SYNC lease not acquired")
-    check(second.generation != first.generation)
-    check(!lease.release(first)) // stale/ABA token must never release a newer workflow.
-    check(lease.isActive(second))
-    check(lease.release(second))
+    val first = controller.begin()
+    check(controller.isCurrent(first))
+    check(controller.claimTerminal(first))
+    check(!controller.claimTerminal(first)) { "same operation must not claim terminal completion twice" }
 
-    repeat(100) {
-        val raceLease = OperationLease()
-        val ready = java.util.concurrent.CountDownLatch(3)
-        val start = java.util.concurrent.CountDownLatch(1)
-        val winners = java.util.concurrent.atomic.AtomicInteger(0)
-        val threads = AutomationRunKind.entries.map { kind ->
-            Thread {
-                ready.countDown()
-                start.await()
-                if (raceLease.acquire(kind) != null) winners.incrementAndGet()
-            }.also(Thread::start)
-        }
-        ready.await()
-        start.countDown()
-        threads.forEach(Thread::join)
-        check(winners.get() == 1)
-        check(raceLease.current() != null)
-    }
+    val second = controller.begin()
+    check(second.generation > first.generation)
+    check(!controller.isCurrent(first)) { "old generation must be rejected after a new operation begins" }
+    check(controller.isCurrent(second))
+    check(!controller.claimTerminal(first)) { "stale generation must never claim terminal ownership" }
+    check(controller.claimTerminal(second))
+
+    controller.invalidate(second)
+    check(!controller.isCurrent(second))
+
+    val groupGate = TerminalOnceGate<String>()
+    groupGate.reset("queue-1")
+    check(groupGate.claim("queue-1"))
+    check(!groupGate.claim("queue-1")) { "group completion must be idempotent" }
+    groupGate.reset("queue-2")
+    check(!groupGate.claim("queue-1")) { "old group callback must not claim a new group gate" }
+    check(groupGate.claim("queue-2"))
+
     println("OperationLeaseSmoke: PASS")
 }

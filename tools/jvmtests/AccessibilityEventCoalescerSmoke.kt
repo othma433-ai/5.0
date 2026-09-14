@@ -1,25 +1,17 @@
-package com.waalothmany.linkbot.tools
+package com.waalothmany.linkbot.automation
 
-import com.waalothmany.linkbot.automation.AccessibilityEventCoalescer
-import com.waalothmany.linkbot.automation.AccessibilityEventSignal
-import com.waalothmany.linkbot.automation.EventSignalKind
+fun main() {
+    val c = AccessibilityEventCoalescer(contentWindowMs = 120)
+    check(c.shouldProcess(AccessibilityEventClass.WINDOW_STATE, nowMs = 1_000, operationGeneration = 1, windowId = 7))
+    check(c.shouldProcess(AccessibilityEventClass.WINDOW_STATE, nowMs = 1_001, operationGeneration = 1, windowId = 7)) { "window transitions must never be coalesced" }
 
-object AccessibilityEventCoalescerSmoke {
-    fun run() {
-        val q = AccessibilityEventCoalescer(capacity = 3)
-        q.offer(AccessibilityEventSignal("com.whatsapp", 1, EventSignalKind.CONTENT))
-        q.offer(AccessibilityEventSignal("com.whatsapp", 2, EventSignalKind.CONTENT))
-        check(q.size() == 1) { "content churn should coalesce" }
+    check(c.shouldProcess(AccessibilityEventClass.WINDOW_CONTENT_CHANGED, nowMs = 1_010, operationGeneration = 1, windowId = 7))
+    check(!c.shouldProcess(AccessibilityEventClass.WINDOW_CONTENT_CHANGED, nowMs = 1_050, operationGeneration = 1, windowId = 7))
+    check(c.shouldProcess(AccessibilityEventClass.WINDOW_CONTENT_CHANGED, nowMs = 1_131, operationGeneration = 1, windowId = 7))
 
-        q.offer(AccessibilityEventSignal("com.whatsapp", 3, EventSignalKind.SCROLL))
-        q.offer(AccessibilityEventSignal("com.whatsapp", 4, EventSignalKind.WINDOW_STATE))
-        check(q.size() == 3)
-        check(q.poll()?.eventType == 2)
-        check(q.poll()?.kind == EventSignalKind.SCROLL)
-        check(q.poll()?.kind == EventSignalKind.WINDOW_STATE)
+    check(c.shouldProcess(AccessibilityEventClass.WINDOW_CONTENT_CHANGED, nowMs = 1_140, operationGeneration = 2, windowId = 7)) { "new operation generation must bypass old coalescing state" }
+    check(c.shouldProcess(AccessibilityEventClass.WINDOW_CONTENT_CHANGED, nowMs = 1_150, operationGeneration = 2, windowId = 8)) { "new window must bypass old coalescing state" }
+    check(c.shouldProcess(AccessibilityEventClass.OTHER, nowMs = 1_151, operationGeneration = 2, windowId = 8))
 
-        repeat(10) { q.offer(AccessibilityEventSignal("com.whatsapp", 100 + it, EventSignalKind.CLICK)) }
-        check(q.size() == 3) { "queue must stay bounded" }
-        println("AccessibilityEventCoalescerSmoke: PASS")
-    }
+    println("AccessibilityEventCoalescerSmoke: PASS")
 }

@@ -22,21 +22,8 @@ interface InstanceDao {
     @Query("SELECT * FROM whatsapp_instances WHERE id=:id LIMIT 1")
     suspend fun get(id: String): WhatsAppInstanceEntity?
 
-    @Query("SELECT * FROM whatsapp_instances WHERE androidUserId=:userId AND packageName=:packageName LIMIT 1")
-    suspend fun getByPackage(userId: Int, packageName: String): WhatsAppInstanceEntity?
-
-    @Query("""
-        UPDATE whatsapp_instances
-        SET lastResolvedEngine=:engine, reachable=:reachable,
-            lastSuccessfulLaunchAt=:lastSuccessfulLaunchAt
-        WHERE id=:id
-    """)
-    suspend fun updateRuntimeRoute(
-        id: String,
-        engine: String?,
-        reachable: Boolean,
-        lastSuccessfulLaunchAt: Long?,
-    )
+    @Query("SELECT * FROM whatsapp_instances WHERE packageName=:packageName LIMIT 1")
+    suspend fun getByPackage(packageName: String): WhatsAppInstanceEntity?
 }
 
 @Dao
@@ -57,15 +44,15 @@ interface GroupDao {
     suspend fun byInstance(instanceId: String): List<GroupEntity>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnore(items: List<GroupEntity>)
+    suspend fun insertIgnore(items: List<GroupEntity>): List<Long>
 
     @Query("""
-        UPDATE groups SET displayTitle=:displayTitle, normalizedTitle=:normalizedTitle, unread=:unread, unreadCount=:unreadCount, active=:active,
+        UPDATE groups SET displayTitle=:displayTitle, normalizedTitle=:normalizedTitle, unread=:unread, unreadCount=:unreadCount, active=:active, isNew=:isNew,
                lastPreview=:lastPreview, lastSeenAt=:lastSeenAt, lastSeenSyncId=:syncId, present=1
         WHERE id=:id
     """)
     suspend fun updateSyncFields(
-        id: String, displayTitle: String, normalizedTitle: String, unread: Boolean, unreadCount: Int?, active: Boolean,
+        id: String, displayTitle: String, normalizedTitle: String, unread: Boolean, unreadCount: Int?, active: Boolean, isNew: Boolean,
         lastPreview: String?, lastSeenAt: Long, syncId: String?
     )
 
@@ -93,6 +80,18 @@ interface GroupDao {
     @Query("UPDATE groups SET selected=1 WHERE instanceId=:instanceId AND extractionState='FAILED' AND present=1")
     suspend fun selectFailed(instanceId: String)
 
+    @Query("UPDATE groups SET selected=1 WHERE instanceId=:instanceId AND extractionState='COMPLETED' AND present=1")
+    suspend fun selectCompleted(instanceId: String)
+
+    @Query("UPDATE groups SET selected=1 WHERE instanceId=:instanceId AND extractionState='PENDING' AND present=1")
+    suspend fun selectPending(instanceId: String)
+
+    @Query("UPDATE groups SET selected=1 WHERE instanceId=:instanceId AND isNew=1 AND present=1")
+    suspend fun selectNew(instanceId: String)
+
+    @Query("UPDATE groups SET selected=CASE WHEN selected=1 THEN 0 ELSE 1 END WHERE instanceId=:instanceId AND present=1")
+    suspend fun invertSelection(instanceId: String)
+
     @Query("UPDATE groups SET extractionState=:state, checkpoint=:checkpoint WHERE id=:id")
     suspend fun updateExtraction(id: String, state: String, checkpoint: String?)
 }
@@ -101,6 +100,9 @@ interface GroupDao {
 interface LinkDao {
     @Query("SELECT COUNT(*) FROM links")
     fun observeCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM links")
+    suspend fun countNow(): Int
 
     @Query("SELECT * FROM links ORDER BY lastSeenAt DESC")
     fun observeAll(): Flow<List<LinkEntity>>
@@ -123,6 +125,9 @@ interface OccurrenceDao {
     @Query("SELECT COUNT(*) FROM occurrences")
     fun observeCount(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM occurrences")
+    suspend fun countNow(): Int
+
     @Query("SELECT * FROM occurrences ORDER BY createdAt DESC")
     suspend fun all(): List<OccurrenceEntity>
 }
@@ -135,7 +140,10 @@ interface QueueDao {
     @Query("SELECT * FROM queue_items WHERE sessionId=:sessionId ORDER BY position")
     suspend fun forSession(sessionId: String): List<QueueItemEntity>
 
-    @Query("SELECT * FROM queue_items WHERE sessionId=:sessionId AND state IN ('WAITING','LOCATING','OPENING','VERIFYING','SCANNING','PAUSED') ORDER BY position LIMIT 1")
+    @Query("SELECT * FROM queue_items WHERE id=:id LIMIT 1")
+    suspend fun get(id: String): QueueItemEntity?
+
+    @Query("SELECT * FROM queue_items WHERE sessionId=:sessionId AND state IN ('WAITING','RUNNING','PAUSED','PARTIAL') ORDER BY position LIMIT 1")
     suspend fun nextPending(sessionId: String): QueueItemEntity?
 
     @Query("UPDATE queue_items SET state=:state, attempts=:attempts, lastError=:error, updatedAt=:updatedAt WHERE id=:id")
@@ -159,34 +167,58 @@ interface SessionDao {
     @Query("SELECT * FROM sessions WHERE state IN ('RUNNING','PAUSED','RECOVERING') ORDER BY updatedAt DESC LIMIT 1")
     suspend fun active(): BotSessionEntity?
 
+    @Query("SELECT * FROM sessions WHERE type='EXTRACTION' AND state IN ('RUNNING','PAUSED','RECOVERING','STOPPED') ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun latestResumable(): BotSessionEntity?
+
     @Query("SELECT * FROM sessions ORDER BY startedAt DESC LIMIT 1")
     fun observeLatest(): Flow<BotSessionEntity?>
 
     @Query("SELECT * FROM sessions ORDER BY startedAt DESC LIMIT 1")
     suspend fun latest(): BotSessionEntity?
 
+    @Query("SELECT * FROM sessions WHERE id=:id LIMIT 1")
+    suspend fun get(id: String): BotSessionEntity?
+
     @Query("UPDATE sessions SET state=:state, updatedAt=:updatedAt, completedAt=:completedAt WHERE id=:id")
     suspend fun updateState(id: String, state: String, updatedAt: Long = System.currentTimeMillis(), completedAt: Long? = null)
 }
 
 data class ExportOccurrenceRow(
+    val occurrenceId: String,
+    val linkId: String,
+    val groupId: String?,
     val url: String,
     val category: String,
     val occurrenceCount: Int,
     val groupTitle: String?,
     val sender: String?,
     val timestampRaw: String?,
+    val createdAt: Long,
 )
 
 @Dao
 interface ExportDao {
     @Query("""
-        SELECT l.canonicalUrl AS url, l.category AS category, l.occurrenceCount AS occurrenceCount,
-               g.displayTitle AS groupTitle, o.sender AS sender, o.timestampRaw AS timestampRaw
+        SELECT o.id AS occurrenceId, o.linkId AS linkId, o.groupId AS groupId,
+               l.canonicalUrl AS url, l.category AS category, l.occurrenceCount AS occurrenceCount,
+               g.displayTitle AS groupTitle, o.sender AS sender, o.timestampRaw AS timestampRaw,
+               o.createdAt AS createdAt
         FROM occurrences o
         JOIN links l ON l.id=o.linkId
         LEFT JOIN groups g ON g.id=o.groupId
         ORDER BY o.createdAt DESC
     """)
     suspend fun occurrences(): List<ExportOccurrenceRow>
+
+    @Query("""
+        SELECT o.id AS occurrenceId, o.linkId AS linkId, o.groupId AS groupId,
+               l.canonicalUrl AS url, l.category AS category, l.occurrenceCount AS occurrenceCount,
+               g.displayTitle AS groupTitle, o.sender AS sender, o.timestampRaw AS timestampRaw,
+               o.createdAt AS createdAt
+        FROM occurrences o
+        JOIN links l ON l.id=o.linkId
+        LEFT JOIN groups g ON g.id=o.groupId
+        ORDER BY o.createdAt DESC
+    """)
+    fun observeOccurrences(): Flow<List<ExportOccurrenceRow>>
 }

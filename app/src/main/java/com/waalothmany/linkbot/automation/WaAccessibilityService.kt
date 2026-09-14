@@ -8,27 +8,36 @@ import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.waalothmany.linkbot.ServiceLocator
-import com.waalothmany.linkbot.runtime.engine.accessibility.AccessibilityRuntimeSupervisor
+import com.waalothmany.linkbot.core.exporter.AutomaticExportCoordinator
+import com.waalothmany.linkbot.capability.AccessibilityConnectionMonitor
 import com.waalothmany.linkbot.core.link.LinkExtractor
 import com.waalothmany.linkbot.data.BotSessionEntity
 import com.waalothmany.linkbot.data.GroupEntity
 import com.waalothmany.linkbot.data.QueueItemEntity
 import com.waalothmany.linkbot.data.WhatsAppInstanceEntity
 import com.waalothmany.linkbot.runtime.BotForegroundService
-import com.waalothmany.linkbot.runtime.EngineRegistry
 import com.waalothmany.linkbot.runtime.DiagnosticLog
 import com.waalothmany.linkbot.runtime.BotRuntime
 import com.waalothmany.linkbot.runtime.RuntimePhase
 import com.waalothmany.linkbot.runtime.RuntimeSnapshot
+import com.waalothmany.linkbot.runtime.OperationLease
+import com.waalothmany.linkbot.runtime.OperationLeaseController
+import com.waalothmany.linkbot.runtime.OperationKind
+import com.waalothmany.linkbot.runtime.TerminalOnceGate
 import com.waalothmany.linkbot.runtime.ThroughputMeter
 import com.waalothmany.linkbot.whatsapp.WhatsAppInstanceDetector
+import com.waalothmany.linkbot.whatsapp.WhatsAppAdapter
+import com.waalothmany.linkbot.whatsapp.WhatsAppAdapterRegistry
+import com.waalothmany.linkbot.whatsapp.GenericDiscoverableWhatsAppAdapter
+import com.waalothmany.linkbot.whatsapp.AdaptiveSelectorStore
+import com.waalothmany.linkbot.whatsapp.SelectorRole
+import com.waalothmany.linkbot.whatsapp.SelectorSignature
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
 import kotlinx.coroutines.cancel
 import java.security.MessageDigest
 import java.util.UUID
@@ -37,9 +46,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 class WaAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var operation: Operation = Operation.None
-    private val operationLease = OperationLease()
+    private val operationLeaseController = OperationLeaseController()
+    private val groupTerminalGate = TerminalOnceGate<String>()
     private var targetPackage: String? = null
     private var targetInstanceId: String? = null
+    private var targetInstance: WhatsAppInstanceEntity? = null
+    private var targetAdapter: WhatsAppAdapter = GenericDiscoverableWhatsAppAdapter
+    private val adaptiveSelectorStore by lazy(LazyThreadSafetyMode.NONE) { AdaptiveSelectorStore(this) }
     private var syncId: String? = null
     private val syncSeen = LinkedHashMap<String, GroupEntity>()
     private var syncExistingGroups: List<GroupEntity> = emptyList()
@@ -72,8 +85,9 @@ class WaAccessibilityService : AccessibilityService() {
     private var groupsCompleted = 0
     private var totalQueue = 0
     private var stageWatchdogJob: Job? = null
+    private var accessibilityHeartbeatJob: Job? = null
     private val eventGuard = AtomicBoolean(false)
-    private val eventCoalescer = AccessibilityEventCoalescer(capacity = 4)
+    private val eventCoalescer = AccessibilityEventCoalescer(contentWindowMs = 120L)
     private val prepareInFlight = AtomicBoolean(false)
     private var syncTiming = AdaptiveTimingPolicy(PerformanceProfiles.forMode(PerformanceMode.BALANCED))
     private var extractionTiming = AdaptiveTimingPolicy(PerformanceProfiles.forMode(PerformanceMode.BALANCED))
@@ -89,142 +103,162 @@ class WaAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        AccessibilityRuntimeSupervisor.markBinderConnected()
+        AccessibilityConnectionMonitor.markConnected()
+        accessibilityHeartbeatJob?.cancel()
+        accessibilityHeartbeatJob = scope.launch {
+            while (true) {
+                delay(10_000)
+                AccessibilityConnectionMonitor.markHeartbeat()
+            }
+        }
         DiagnosticLog.record("ACCESSIBILITY_CONNECTED")
         scope.launch {
-            val recoveryLease = operationLease.acquire(AutomationRunKind.EXTRACT) ?: return@launch
-            try {
-                val active = ServiceLocator.database.sessionDao().active()
-                if (!operationLease.isActive(recoveryLease)) return@launch
-                if (active != null && active.type == "EXTRACTION") {
-                    val instanceEntity = ServiceLocator.database.instanceDao().get(active.instanceId)
-                    if (!operationLease.isActive(recoveryLease)) return@launch
-                    if (instanceEntity != null) {
-                        extractionSessionId = active.id
-                        targetInstanceId = active.instanceId
-                        targetPackage = instanceEntity.packageName
-                        extractionMode = runCatching { AutomationMode.valueOf(active.mode) }.getOrDefault(AutomationMode.NEW_ONLY)
-                        val recoveredQueue = ServiceLocator.database.queueDao().forSession(active.id)
-                        if (!operationLease.isActive(recoveryLease)) return@launch
-                        val progress = QueueProgressPolicy.summarize(recoveredQueue.map { it.state })
-                        totalQueue = progress.total
-                        groupsCompleted = progress.completed
-                        resetAdaptiveSession()
-                        BotRuntime.pause()
-                        setExtractStage(ExtractStage.PREPARE_LIST)
-                        BotRuntime.update(
-                            RuntimeSnapshot(
-                                RuntimePhase.PAUSED,
-                                "Resume available",
-                                "Recovered ${progress.completed}/${progress.total} groups • ${progress.failed} failed",
-                                progress.completed,
-                                progress.total,
-                            )
+            val active = ServiceLocator.database.sessionDao().active()
+            if (active != null && active.type == "EXTRACTION") {
+                val instanceEntity = ServiceLocator.database.instanceDao().get(active.instanceId)
+                if (instanceEntity != null) {
+                    extractionSessionId = active.id
+                    targetInstanceId = active.instanceId
+                    targetPackage = instanceEntity.packageName
+                    targetInstance = instanceEntity
+                    targetAdapter = WhatsAppAdapterRegistry.byId(instanceEntity.adapterId)
+                    extractionMode = runCatching { AutomationMode.valueOf(active.mode) }.getOrDefault(AutomationMode.NEW_ONLY)
+                    val recoveredQueue = ServiceLocator.database.queueDao().forSession(active.id)
+                    val progress = QueueProgressPolicy.summarize(recoveredQueue.map { it.state })
+                    totalQueue = progress.total
+                    groupsCompleted = progress.completed
+                    resetAdaptiveSession()
+                    BotRuntime.pause()
+                    val recoveredLease = operationLeaseController.beginExclusive(OperationKind.EXTRACTION)
+                    if (recoveredLease == null) {
+                        DiagnosticLog.record("RECOVERY_LEASE_BUSY", mapOf("session" to active.id.take(12)))
+                        return@launch
+                    }
+                    operation = Operation.Extract(ExtractStage.PREPARE_LIST, recoveredLease)
+                    setExtractStage(ExtractStage.PREPARE_LIST)
+                    val autoResume = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("auto_resume", true)
+                    val shouldAutoResume = autoResume && active.state != "PAUSED"
+                    BotRuntime.update(
+                        RuntimeSnapshot(
+                            RuntimePhase.PAUSED,
+                            if (shouldAutoResume) "Resuming recovered session" else "Resume available",
+                            "Recovered ${progress.completed}/${progress.total} groups • ${progress.failed} failed",
+                            progress.completed,
+                            progress.total,
                         )
-                    } else {
-                        operationLease.release(recoveryLease)
-                        BotRuntime.update(RuntimeSnapshot(phase = RuntimePhase.READY, title = "Accessibility ready"))
+                    )
+                    if (shouldAutoResume) {
+                        DiagnosticLog.record("AUTO_RESUME_TRIGGERED", mapOf("session" to active.id.take(12)))
+                        resumeAutomation()
                     }
                 } else {
-                    operationLease.release(recoveryLease)
                     BotRuntime.update(RuntimeSnapshot(phase = RuntimePhase.READY, title = "Accessibility ready"))
                 }
-            } catch (t: Throwable) {
-                if (operationLease.isActive(recoveryLease)) {
-                    operationLease.release(recoveryLease)
-                    DiagnosticLog.record("RECOVERY_START_FAILED", mapOf("error" to t.javaClass.simpleName))
-                    BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Recovery check failed", t.javaClass.simpleName))
-                }
+            } else {
+                BotRuntime.update(RuntimeSnapshot(phase = RuntimePhase.READY, title = "Accessibility ready"))
             }
         }
     }
 
     override fun onDestroy() {
+        accessibilityHeartbeatJob?.cancel()
+        accessibilityHeartbeatJob = null
+        if (operation != Operation.None) suspendForAccessibilityLoss("ACCESSIBILITY_DISCONNECTED")
         stageWatchdogJob?.cancel()
         syncProbeJob?.cancel()
         syncOpeningProbeJob?.cancel()
         extractionProbeJob?.cancel()
         extractionNavigationProbeJob?.cancel()
-        operationLease.releaseAny()
-        eventCoalescer.clear()
         scope.cancel()
         if (instance === this) instance = null
-        AccessibilityRuntimeSupervisor.markDisconnected()
+        AccessibilityConnectionMonitor.markDisconnected()
         DiagnosticLog.record("ACCESSIBILITY_DISCONNECTED")
         super.onDestroy()
     }
 
     override fun onInterrupt() {
-        AccessibilityRuntimeSupervisor.markInterrupted()
+        AccessibilityConnectionMonitor.markInterrupted()
         DiagnosticLog.record("ACCESSIBILITY_INTERRUPTED")
-        BotRuntime.update(BotRuntime.state.value.copy(phase = RuntimePhase.ERROR, title = "Accessibility interrupted"))
+        suspendForAccessibilityLoss("ACCESSIBILITY_INTERRUPTED")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString()
-        AccessibilityRuntimeSupervisor.markEvent(pkg)
-        if (pkg == null) return
-        handleAccessibilitySignal(
-            AccessibilityEventSignal(
-                packageName = pkg,
-                eventType = event.eventType,
-                kind = eventSignalKind(event.eventType),
-            )
-        )
-    }
-
-    private fun handleAccessibilitySignal(signal: AccessibilityEventSignal) {
+        AccessibilityConnectionMonitor.markActivity()
+        val pkg = event?.packageName?.toString() ?: return
         val wanted = targetPackage ?: return
-        if (signal.packageName != wanted) return
+        if (pkg != wanted) return
+        val eventClass = when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> AccessibilityEventClass.WINDOW_STATE
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> AccessibilityEventClass.WINDOW_CONTENT_CHANGED
+            else -> AccessibilityEventClass.OTHER
+        }
+        if (!eventCoalescer.shouldProcess(
+                eventClass = eventClass,
+                nowMs = System.currentTimeMillis(),
+                operationGeneration = currentOperationLease()?.generation,
+                windowId = event.windowId,
+            )
+        ) return
         if (BotRuntime.stopRequested) {
-            eventCoalescer.clear()
             finishStopped()
             return
         }
         if (BotRuntime.pauseRequested) return
-        if (!eventGuard.compareAndSet(false, true)) {
-            eventCoalescer.offer(signal)
-            return
-        }
+        if (!eventGuard.compareAndSet(false, true)) return
         try {
             val root = rootInActiveWindow ?: return
-            if (root.packageName?.toString() != wanted) return
-            AccessibilityRuntimeSupervisor.markWindowReady()
-            when (operation) {
-                is Operation.Sync -> handleSync(root, signal.eventType)
-                is Operation.Extract -> handleExtraction(root, signal.eventType)
+            when (val op = operation) {
+                is Operation.Sync -> handleSync(root, event.eventType)
+                is Operation.Extract -> handleExtraction(root, event.eventType)
                 Operation.None -> Unit
             }
         } finally {
             eventGuard.set(false)
-            scheduleCoalescedDrain()
         }
     }
 
-    private fun scheduleCoalescedDrain() {
-        val signal = eventCoalescer.poll() ?: return
-        scope.launch {
-            yield()
-            handleAccessibilitySignal(signal)
+
+    private fun suspendForAccessibilityLoss(code: String) {
+        if (operation == Operation.None) return
+        BotRuntime.pause()
+        stageWatchdogJob?.cancel()
+        syncProbeJob?.cancel()
+        syncOpeningProbeJob?.cancel()
+        extractionProbeJob?.cancel()
+        extractionNavigationProbeJob?.cancel()
+        DiagnosticLog.record("AUTOMATION_SUSPENDED_ACCESSIBILITY", mapOf("reason" to code))
+        BotRuntime.update(
+            BotRuntime.state.value.copy(
+                phase = RuntimePhase.PAUSED,
+                title = "Accessibility unavailable",
+                detail = "Automation suspended safely until the Accessibility service reconnects.",
+                error = code,
+            )
+        )
+        val session = extractionSessionId
+        val queue = currentQueue
+        if (session != null || queue != null) {
+            val lease = currentOperationLease()
+            scope.launch {
+                if (lease != null && !operationLeaseController.isCurrent(lease)) return@launch
+                if (session != null) ServiceLocator.database.sessionDao().updateState(session, "PAUSED")
+                if (queue != null) ServiceLocator.database.queueDao().updateState(queue.id, "PAUSED", queue.attempts, code)
+            }
         }
     }
-
-    private fun eventSignalKind(eventType: Int): EventSignalKind = when (eventType) {
-        AccessibilityEvent.TYPE_VIEW_SCROLLED -> EventSignalKind.SCROLL
-        AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> EventSignalKind.WINDOW_STATE
-        AccessibilityEvent.TYPE_VIEW_CLICKED -> EventSignalKind.CLICK
-        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> EventSignalKind.CONTENT
-        else -> EventSignalKind.OTHER
-    }
-
 
     fun pauseAutomation() {
         BotRuntime.pause()
         stageWatchdogJob?.cancel()
-        val session = extractionSessionId ?: return
+        val session = extractionSessionId
+        val queue = currentQueue
+        val group = currentGroup
+        val checkpoint = currentCheckpointForPersistence()
         scope.launch {
-            ServiceLocator.database.sessionDao().updateState(session, "PAUSED")
-            currentQueue?.let { ServiceLocator.database.queueDao().updateState(it.id, "PAUSED", it.attempts, null) }
+            if (session != null) ServiceLocator.database.sessionDao().updateState(session, "PAUSED")
+            if (queue != null) ServiceLocator.database.queueDao().updateState(queue.id, "PAUSED", queue.attempts, null)
+            if (group != null) ServiceLocator.groups.updateExtraction(group.id, "PENDING", checkpoint ?: group.checkpoint)
+            DiagnosticLog.record("PAUSE_CHECKPOINT_PERSISTED", mapOf("hasCheckpoint" to (checkpoint != null), "group" to (group?.id?.take(12) ?: "none")))
         }
     }
 
@@ -239,12 +273,10 @@ class WaAccessibilityService : AccessibilityService() {
         scope.launch {
             if (session != null) {
                 ServiceLocator.database.sessionDao().updateState(session, "RUNNING")
-                currentQueue?.let { ServiceLocator.database.queueDao().updateState(it.id, "SCANNING", it.attempts, null) }
+                currentQueue?.let { ServiceLocator.database.queueDao().updateState(it.id, "RUNNING", it.attempts, null) }
             }
-            if (!launchConfiguredInstance(recovery = true)) {
-                BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp recovery failed", "No execution engine could restore the selected instance"))
-                return@launch
-            }
+            targetInstance?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
+                ?: targetPackage?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
             rootInActiveWindow?.let { root ->
                 when (operation) {
                     is Operation.Sync -> handleSync(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
@@ -258,34 +290,36 @@ class WaAccessibilityService : AccessibilityService() {
     fun stopAutomation() {
         BotRuntime.stop()
         val session = extractionSessionId
-        scope.launch { if (session != null) ServiceLocator.database.sessionDao().updateState(session, "STOPPED", completedAt = System.currentTimeMillis()) }
+        val queue = currentQueue
+        val group = currentGroup
+        val checkpoint = currentCheckpointForPersistence()
+        scope.launch {
+            if (queue != null) ServiceLocator.database.queueDao().updateState(queue.id, "PARTIAL", queue.attempts, "USER_STOPPED")
+            if (group != null) ServiceLocator.groups.updateExtraction(group.id, "PENDING", checkpoint ?: group.checkpoint)
+            if (session != null) ServiceLocator.database.sessionDao().updateState(session, "STOPPED", completedAt = null)
+        }
         finishStopped()
     }
 
     fun skipCurrent() { BotRuntime.skip() }
 
     fun retryFailed() {
-        val retryLease = operationLease.acquire(AutomationRunKind.RETRY_FAILED)
-        if (retryLease == null) {
-            DiagnosticLog.record(
-                "RETRY_START_IGNORED_BUSY",
-                mapOf("active" to (operationLease.current()?.name ?: "UNKNOWN")),
-            )
+        if (operation != Operation.None) {
+            DiagnosticLog.record("OPERATION_START_REJECTED_BUSY", mapOf("requested" to "RETRY_FAILED"))
             return
         }
+        val retryLease = operationLeaseController.beginExclusive(OperationKind.RETRY_FAILED) ?: return
+        operation = Operation.Extract(ExtractStage.PREPARE_LIST, retryLease)
         scope.launch {
-            var started = false
-            try {
             val session = extractionSessionId?.let { id ->
                 ServiceLocator.database.sessionDao().latest()?.takeIf { it.id == id }
             } ?: ServiceLocator.database.sessionDao().latest()
-            if (!operationLease.isActive(retryLease)) return@launch
             if (session == null || session.type != "EXTRACTION") {
                 BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "No extraction session", "Nothing to retry"))
+                clearOperation(retryLease)
                 return@launch
             }
             val allQueue = ServiceLocator.database.queueDao().forSession(session.id)
-            if (!operationLease.isActive(retryLease)) return@launch
             val failed = allQueue.filter { it.state == "FAILED" }
             val retryable = failed.filter { item ->
                 FailureRecoveryPolicy.decide(item.lastError, item.attempts) == FailureDisposition.RETRY
@@ -293,12 +327,8 @@ class WaAccessibilityService : AccessibilityService() {
             val protected = failed.size - retryable.size
             val retryableIds = retryable.mapTo(hashSetOf()) { it.id }
             retryable.forEach { item ->
-                if (!operationLease.isActive(retryLease)) return@launch
                 ServiceLocator.database.queueDao().updateState(item.id, "WAITING", item.attempts, null)
-                if (!operationLease.isActive(retryLease)) return@launch
-                val checkpoint = ServiceLocator.database.groupDao().get(item.groupId)?.checkpoint
-                if (!operationLease.isActive(retryLease)) return@launch
-                ServiceLocator.groups.updateExtraction(item.groupId, "PENDING", checkpoint)
+                ServiceLocator.groups.updateExtraction(item.groupId, "PENDING", ServiceLocator.database.groupDao().get(item.groupId)?.checkpoint)
             }
             if (retryable.isEmpty()) {
                 BotRuntime.update(
@@ -307,13 +337,19 @@ class WaAccessibilityService : AccessibilityService() {
                         detail = if (protected > 0) "$protected failed group(s) require review" else "Nothing to retry",
                     )
                 )
+                clearOperation(retryLease)
                 return@launch
             }
-            val instanceEntity = ServiceLocator.database.instanceDao().get(session.instanceId) ?: return@launch
-            if (!operationLease.isActive(retryLease)) return@launch
+            val instanceEntity = ServiceLocator.database.instanceDao().get(session.instanceId) ?: run {
+                clearOperation(retryLease)
+                return@launch
+            }
+            if (!operationLeaseController.isCurrent(retryLease)) return@launch
             extractionSessionId = session.id
             targetInstanceId = session.instanceId
             targetPackage = instanceEntity.packageName
+            targetInstance = instanceEntity
+            targetAdapter = WhatsAppAdapterRegistry.byId(instanceEntity.adapterId)
             extractionMode = runCatching { AutomationMode.valueOf(session.mode) }.getOrDefault(AutomationMode.NEW_ONLY)
             val progress = QueueProgressPolicy.summarize(allQueue.map { item -> if (item.id in retryableIds) "WAITING" else item.state })
             totalQueue = progress.total
@@ -323,10 +359,6 @@ class WaAccessibilityService : AccessibilityService() {
             resetAdaptiveSession()
             setExtractStage(ExtractStage.PREPARE_LIST)
             ServiceLocator.database.sessionDao().updateState(session.id, "RUNNING")
-            if (!operationLease.isActive(retryLease)) {
-                DiagnosticLog.record("RETRY_START_STALE_ABORT", mapOf("generation" to retryLease.generation, "point" to "session"))
-                return@launch
-            }
             BotRuntime.resetControlFlags()
             BotRuntime.update(
                 RuntimeSnapshot(
@@ -337,36 +369,91 @@ class WaAccessibilityService : AccessibilityService() {
                     progress.total,
                 )
             )
-            if (!operationLease.isActive(retryLease)) return@launch
             startRuntimeService("Retrying failed groups")
-            check(launchInstanceEntity(instanceEntity, recovery = true)) { "INSTANCE_LAUNCH_FAILED" }
-            started = true
-            } catch (t: Throwable) {
-                DiagnosticLog.record("RETRY_START_FAILED", mapOf("error" to t.javaClass.simpleName))
-                if (operationLease.isActive(retryLease)) {
-                    if (operation is Operation.Extract) clearOperation() else operationLease.release(retryLease)
-                    BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Retry failed to start", t.javaClass.simpleName))
-                } else {
-                    DiagnosticLog.record("RETRY_START_STALE_ABORT", mapOf("generation" to retryLease.generation))
-                }
-            } finally {
-                if (!started) operationLease.release(retryLease)
-            }
+            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, instanceEntity)
         }
     }
 
-    fun startGroupSync(instanceId: String, packageName: String): Boolean {
-        val syncLease = operationLease.acquire(AutomationRunKind.SYNC)
-        if (syncLease == null) {
+    fun resumePending() {
+        if (operation != Operation.None) {
+            DiagnosticLog.record("OPERATION_START_REJECTED_BUSY", mapOf("requested" to "RESUME_PENDING"))
+            return
+        }
+        val lease = operationLeaseController.beginExclusive(OperationKind.EXTRACTION) ?: return
+        operation = Operation.Extract(ExtractStage.PREPARE_LIST, lease)
+        scope.launch {
+            val session = ServiceLocator.database.sessionDao().latestResumable()
+            if (session == null) {
+                BotRuntime.update(RuntimeSnapshot(RuntimePhase.READY, "No pending session", "No interrupted extraction session is available."))
+                clearOperation(lease)
+                return@launch
+            }
+            val queue = ServiceLocator.database.queueDao().forSession(session.id)
+            val resumable = queue.any { QueuePersistencePolicy.isResumable(QueuePersistencePolicy.normalize(it.state)) }
+            if (!resumable) {
+                BotRuntime.update(RuntimeSnapshot(RuntimePhase.READY, "Nothing pending", "The latest extraction session has no resumable queue items."))
+                clearOperation(lease)
+                return@launch
+            }
+            val instance = ServiceLocator.database.instanceDao().get(session.instanceId)
+            if (instance == null || !WhatsAppInstanceDetector.isLaunchable(this@WaAccessibilityService, instance)) {
+                BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp unavailable", "The saved WhatsApp instance is not visible in the current Android profile context."))
+                clearOperation(lease)
+                return@launch
+            }
+            extractionSessionId = session.id
+            targetInstanceId = session.instanceId
+            targetPackage = instance.packageName
+            targetInstance = instance
+            targetAdapter = WhatsAppAdapterRegistry.byId(instance.adapterId)
+            extractionMode = runCatching { AutomationMode.valueOf(session.mode) }.getOrDefault(AutomationMode.NEW_ONLY)
+            val states = queue.map { item ->
+                val normalized = QueuePersistencePolicy.normalize(item.state)
+                if (QueuePersistencePolicy.isResumable(normalized)) {
+                    ServiceLocator.database.queueDao().updateState(item.id, "WAITING", item.attempts, null)
+                    "WAITING"
+                } else item.state
+            }
+            val progress = QueueProgressPolicy.summarize(states)
+            totalQueue = progress.total
+            groupsCompleted = progress.completed
+            currentQueue = null
+            currentGroup = null
+            resetAdaptiveSession()
+            setExtractStage(ExtractStage.PREPARE_LIST)
+            ServiceLocator.database.sessionDao().updateState(session.id, "RUNNING", completedAt = null)
+            BotRuntime.resetControlFlags()
+            BotRuntime.update(RuntimeSnapshot(RuntimePhase.EXTRACTING, "Resuming pending extraction", extractionMode.name, progress.completed, progress.total))
+            startRuntimeService("Resuming extraction")
+            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, instance)
+        }
+    }
+
+    fun startGroupSync(instance: WhatsAppInstanceEntity): Boolean {
+        val instanceId = instance.id
+        val packageName = instance.packageName
+        if (operation != Operation.None) {
             DiagnosticLog.record(
-                "SYNC_START_IGNORED_BUSY",
-                mapOf("active" to (operationLease.current()?.name ?: "UNKNOWN"), "package" to (targetPackage ?: packageName)),
+                "OPERATION_START_REJECTED_BUSY",
+                mapOf("requested" to "SYNC", "package" to (targetPackage ?: packageName)),
             )
             return false
         }
+        val canLaunch = WhatsAppInstanceDetector.isLaunchable(this, instance)
+        if (!canLaunch) {
+            BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp unavailable", packageName))
+            return false
+        }
+        val syncLease = operationLeaseController.beginExclusive(OperationKind.SYNC) ?: run {
+            DiagnosticLog.record("OPERATION_START_REJECTED_BUSY", mapOf("requested" to "SYNC_LEASE"))
+            return false
+        }
+        operation = Operation.Sync(SyncStage.OPENING, syncLease)
         BotRuntime.resetControlFlags()
         targetPackage = packageName
         targetInstanceId = instanceId
+        targetInstance = instance
+        targetAdapter = WhatsAppAdapterRegistry.byId(instance.adapterId)
         syncId = UUID.randomUUID().toString()
         syncSeen.clear()
         syncNewOrdinalByTitle.clear()
@@ -389,7 +476,7 @@ class WaAccessibilityService : AccessibilityService() {
         selectionMenuOpened = false
         selectionModeActive = false
         filterVerifyAttempts = 0
-        BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING, "Preparing sync", "Loading local group identities"))
+        BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING_GROUPS, "Preparing sync", "Loading local group identities"))
         DiagnosticLog.record(
             "SYNC_START",
             mapOf(
@@ -398,24 +485,10 @@ class WaAccessibilityService : AccessibilityService() {
                 "strategy" to syncStrategy.name,
             ),
         )
-        try {
-            startRuntimeService("Group sync")
-        } catch (t: Throwable) {
-            DiagnosticLog.record(
-                "SYNC_RUNTIME_SERVICE_START_FAILED",
-                mapOf("error" to t.javaClass.simpleName),
-            )
-            operationLease.release(syncLease)
-            BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Sync failed to start", t.javaClass.simpleName))
-            return false
-        }
+        startRuntimeService("Group sync")
         scope.launch {
-            try {
             syncExistingGroups = ServiceLocator.database.groupDao().byInstance(instanceId)
-            if (!operationLease.isActive(syncLease)) {
-                DiagnosticLog.record("SYNC_START_STALE_ABORT", mapOf("generation" to syncLease.generation))
-                return@launch
-            }
+            if (!operationLeaseController.isCurrent(syncLease)) return@launch
             syncExistingIdentityByTitle = syncExistingGroups.groupBy { it.normalizedTitle }.mapValues { (_, groups) ->
                 groups.map { existing ->
                     GroupIdentityRecord(
@@ -428,49 +501,38 @@ class WaAccessibilityService : AccessibilityService() {
                 }
             }
             setSyncStage(SyncStage.OPENING)
-            BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING, "Opening WhatsApp", "Preparing group sync"))
-            val instanceEntity = ServiceLocator.database.instanceDao().get(instanceId)
-                ?: error("INSTANCE_NOT_FOUND")
-            check(launchInstanceEntity(instanceEntity, recovery = false)) { "INSTANCE_LAUNCH_FAILED" }
-            } catch (t: Throwable) {
-                DiagnosticLog.record("SYNC_START_FAILED", mapOf("error" to t.javaClass.simpleName))
-                if (operationLease.isActive(syncLease)) {
-                    clearOperation()
-                    BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Sync failed to start", t.javaClass.simpleName))
-                    stopRuntimeService()
-                } else {
-                    DiagnosticLog.record("SYNC_START_STALE_ABORT", mapOf("generation" to syncLease.generation))
-                }
-            }
+            BotRuntime.update(RuntimeSnapshot(RuntimePhase.SYNCING_GROUPS, "Opening WhatsApp", "Preparing group sync"))
+            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, instance)
         }
         return true
     }
 
-    fun startExtraction(instanceId: String, packageName: String, mode: AutomationMode) {
-        val extractionLease = operationLease.acquire(AutomationRunKind.EXTRACT)
-        if (extractionLease == null) {
-            DiagnosticLog.record(
-                "EXTRACTION_START_IGNORED_BUSY",
-                mapOf("active" to (operationLease.current()?.name ?: "UNKNOWN"), "package" to (targetPackage ?: packageName)),
-            )
+    fun startExtraction(instance: WhatsAppInstanceEntity, mode: AutomationMode) {
+        val instanceId = instance.id
+        val packageName = instance.packageName
+        if (operation != Operation.None) {
+            DiagnosticLog.record("OPERATION_START_REJECTED_BUSY", mapOf("requested" to "EXTRACTION", "package" to packageName))
             return
         }
+        val extractionLease = operationLeaseController.beginExclusive(OperationKind.EXTRACTION) ?: run {
+            DiagnosticLog.record("OPERATION_START_REJECTED_BUSY", mapOf("requested" to "EXTRACTION_LEASE"))
+            return
+        }
+        operation = Operation.Extract(ExtractStage.PREPARE_LIST, extractionLease)
         BotRuntime.resetControlFlags()
         extractionMode = mode
         targetPackage = packageName
         targetInstanceId = instanceId
+        targetInstance = instance
+        targetAdapter = WhatsAppAdapterRegistry.byId(instance.adapterId)
         groupsCompleted = 0
         resetAdaptiveSession()
         scope.launch {
-            var started = false
-            try {
             val selected = ServiceLocator.groups.selected(instanceId)
-            if (!operationLease.isActive(extractionLease)) {
-                DiagnosticLog.record("EXTRACTION_START_STALE_ABORT", mapOf("generation" to extractionLease.generation))
-                return@launch
-            }
+            if (!operationLeaseController.isCurrent(extractionLease)) return@launch
             if (selected.isEmpty()) {
                 BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Nothing selected", "Select at least one group"))
+                clearOperation(extractionLease)
                 return@launch
             }
             val eligibleIds = ExtractionSelectionPolicy.eligible(
@@ -485,6 +547,7 @@ class WaAccessibilityService : AccessibilityService() {
                     "No eligible groups remain for this extraction mode."
                 }
                 BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Nothing eligible", detail))
+                clearOperation(extractionLease)
                 return@launch
             }
             val byId = eligible.associateBy { it.id }
@@ -503,14 +566,6 @@ class WaAccessibilityService : AccessibilityService() {
             ).map { it.id }
             val ordered = orderedIds.mapNotNull(byId::get)
             val sessionId = UUID.randomUUID().toString()
-            ServiceLocator.database.sessionDao().upsert(
-                BotSessionEntity(sessionId, instanceId, "EXTRACTION", mode.name, "RUNNING")
-            )
-            if (!operationLease.isActive(extractionLease)) {
-                DiagnosticLog.record("EXTRACTION_START_STALE_ABORT", mapOf("generation" to extractionLease.generation, "point" to "session"))
-                ServiceLocator.database.sessionDao().updateState(sessionId, "STOPPED", completedAt = System.currentTimeMillis())
-                return@launch
-            }
             extractionSessionId = sessionId
             totalQueue = ordered.size
             ServiceLocator.database.queueDao().upsertAll(ordered.mapIndexed { index, group ->
@@ -521,68 +576,101 @@ class WaAccessibilityService : AccessibilityService() {
                     position = index,
                 )
             })
-            if (!operationLease.isActive(extractionLease)) {
-                DiagnosticLog.record("EXTRACTION_START_STALE_ABORT", mapOf("generation" to extractionLease.generation, "point" to "queue"))
-                ServiceLocator.database.sessionDao().updateState(sessionId, "STOPPED", completedAt = System.currentTimeMillis())
-                return@launch
-            }
+            ServiceLocator.database.sessionDao().upsert(
+                BotSessionEntity(sessionId, instanceId, "EXTRACTION", mode.name, "RUNNING")
+            )
+            if (!operationLeaseController.isCurrent(extractionLease)) return@launch
             setExtractStage(ExtractStage.PREPARE_LIST)
             BotRuntime.update(RuntimeSnapshot(RuntimePhase.EXTRACTING, "Starting extraction", mode.name, 0, ordered.size))
             DiagnosticLog.record("EXTRACTION_START", mapOf("mode" to mode.name, "groups" to ordered.size))
             startRuntimeService("Extracting links")
-            val instanceEntity = ServiceLocator.database.instanceDao().get(instanceId)
-                ?: error("INSTANCE_NOT_FOUND")
-            check(launchInstanceEntity(instanceEntity, recovery = false)) { "INSTANCE_LAUNCH_FAILED" }
-            started = true
-            } catch (t: Throwable) {
-                DiagnosticLog.record("EXTRACTION_START_FAILED", mapOf("error" to t.javaClass.simpleName))
-                if (operationLease.isActive(extractionLease)) {
-                    if (operation is Operation.Extract) clearOperation() else operationLease.release(extractionLease)
-                    BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "Extraction failed to start", t.javaClass.simpleName))
-                    stopRuntimeService()
-                } else {
-                    DiagnosticLog.record("EXTRACTION_START_STALE_ABORT", mapOf("generation" to extractionLease.generation))
-                }
-            } finally {
-                if (!started) operationLease.release(extractionLease)
-            }
+            WhatsAppInstanceDetector.launch(this@WaAccessibilityService, instance)
         }
     }
 
-    private suspend fun launchConfiguredInstance(recovery: Boolean): Boolean {
-        val instanceId = targetInstanceId ?: return false
-        val instance = ServiceLocator.database.instanceDao().get(instanceId) ?: return false
-        return launchInstanceEntity(instance, recovery)
+    private fun adapterSuffixes(role: SelectorRole): Set<String> = when (role) {
+        SelectorRole.GROUPS_FILTER -> targetAdapter.groupFilterIdSuffixes
+        SelectorRole.ALL_FILTER -> targetAdapter.allFilterIdSuffixes
+        SelectorRole.CHATS_ANCHOR -> targetAdapter.chatsAnchorIdSuffixes
+        SelectorRole.SELECT_ALL -> targetAdapter.selectAllIdSuffixes
+        SelectorRole.CONVERSATION_ROW_TITLE -> targetAdapter.conversationRowTitleIdSuffixes
     }
 
-    private suspend fun launchInstanceEntity(
-        instance: WhatsAppInstanceEntity,
-        recovery: Boolean,
-    ): Boolean {
-        val result = if (recovery) EngineRegistry.recoverInstance(instance) else EngineRegistry.launchInstance(instance)
-        val now = System.currentTimeMillis()
-        ServiceLocator.database.instanceDao().updateRuntimeRoute(
-            id = instance.id,
-            engine = result.engine?.name,
-            reachable = result.success,
-            lastSuccessfulLaunchAt = if (result.success) now else instance.lastSuccessfulLaunchAt,
-        )
-        DiagnosticLog.record(
-            "ENGINE_LAUNCH_RESULT",
-            mapOf(
-                "instance" to instance.id.take(12),
-                "user" to instance.androidUserId,
-                "package" to instance.packageName,
-                "recovery" to recovery,
-                "success" to result.success,
-                "engine" to (result.engine?.name ?: "NONE"),
-                "failure" to (result.failure?.name ?: "NONE"),
-                "attempts" to result.attempts.joinToString(">") { it.engine.name + ":" + if (it.success) "OK" else (it.failure?.name ?: "FAIL") },
-                "trace" to result.traceId,
-            ),
-        )
-        return result.success
+    private fun learnedSelectors(role: SelectorRole): List<SelectorSignature> =
+        targetInstanceId?.let { instanceId ->
+            adaptiveSelectorStore.candidates(instanceId, role).map { it.signature }
+        }.orEmpty()
+
+    private fun findAdaptiveControl(
+        root: AccessibilityNodeInfo,
+        role: SelectorRole,
+        labels: Collection<String>,
+        peerLabels: Collection<String> = emptyList(),
+        legacyHints: Collection<String> = emptyList(),
+    ): AccessibilityNodeInfo? {
+        AccessibilityTree.findBySelectorSignatures(root, learnedSelectors(role))?.let { return it }
+        AccessibilityTree.findByViewIdSuffixes(root, adapterSuffixes(role))?.let { return it }
+        targetPackage?.let { pkg ->
+            AccessibilityTree.findByViewIdHints(root, targetAdapter.resourceIdHintsFor(pkg, role))?.let { return it }
+        }
+        if (legacyHints.isNotEmpty()) AccessibilityTree.findByViewIdHints(root, legacyHints)?.let { return it }
+        return if (peerLabels.isNotEmpty()) {
+            AccessibilityTree.findFilterControl(root, labels, peerLabels)
+        } else {
+            AccessibilityTree.findByControlLabel(root, labels)
+                ?: AccessibilityTree.findByAnyText(root, labels)
+        }
     }
+
+    private fun recordVerifiedSelector(role: SelectorRole, node: AccessibilityNodeInfo?) {
+        val instanceId = targetInstanceId ?: return
+        val signature = AccessibilityTree.selectorSignature(node) ?: return
+        adaptiveSelectorStore.recordVerified(instanceId, role, signature)
+        DiagnosticLog.record(
+            "ADAPTIVE_SELECTOR_VERIFIED",
+            mapOf("role" to role.name, "idSuffix" to signature.resourceIdSuffix.orEmpty(), "hasLabel" to (signature.normalizedLabel != null)),
+        )
+    }
+
+    private fun recordFailedSelector(role: SelectorRole, node: AccessibilityNodeInfo?) {
+        val instanceId = targetInstanceId ?: return
+        val signature = AccessibilityTree.selectorSignature(node) ?: return
+        adaptiveSelectorStore.recordFailure(instanceId, role, signature)
+        DiagnosticLog.record("ADAPTIVE_SELECTOR_REJECTED", mapOf("role" to role.name, "idSuffix" to signature.resourceIdSuffix.orEmpty()))
+    }
+
+    private fun findGroupsFilter(root: AccessibilityNodeInfo): AccessibilityNodeInfo? =
+        findAdaptiveControl(
+            root = root,
+            role = SelectorRole.GROUPS_FILTER,
+            labels = targetAdapter.groupFilterLabels,
+            peerLabels = targetAdapter.filterPeerLabels,
+            legacyHints = GROUP_ID_HINTS,
+        )
+
+    private fun findAllFilter(root: AccessibilityNodeInfo): AccessibilityNodeInfo? =
+        findAdaptiveControl(
+            root = root,
+            role = SelectorRole.ALL_FILTER,
+            labels = targetAdapter.allFilterLabels,
+            peerLabels = targetAdapter.filterPeerLabels,
+        )
+
+    private fun findChatsAnchor(root: AccessibilityNodeInfo): AccessibilityNodeInfo? =
+        findAdaptiveControl(
+            root = root,
+            role = SelectorRole.CHATS_ANCHOR,
+            labels = CHAT_LABELS,
+            legacyHints = CHAT_ID_HINTS,
+        )
+
+    private fun findSelectAll(root: AccessibilityNodeInfo): AccessibilityNodeInfo? =
+        findAdaptiveControl(
+            root = root,
+            role = SelectorRole.SELECT_ALL,
+            labels = targetAdapter.selectAllLabels,
+            legacyHints = SELECT_ALL_ID_HINTS,
+        )
 
     private fun handleSync(root: AccessibilityNodeInfo, eventType: Int) {
         val op = operation as? Operation.Sync ?: return
@@ -599,10 +687,8 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun openGroupsFilter(root: AccessibilityNodeInfo) {
-        val groups = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-            ?: AccessibilityTree.findFilterControl(root, GROUP_LABELS, FILTER_PEER_LABELS)
-        val chats = AccessibilityTree.findByViewIdHints(root, CHAT_ID_HINTS)
-            ?: AccessibilityTree.findByControlLabel(root, CHAT_LABELS)
+        val groups = findGroupsFilter(root)
+        val chats = findChatsAnchor(root)
         val evidence = AccessibilityTree.screenEvidence(root)
 
         syncOpeningMisses++
@@ -670,8 +756,7 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun openAllChatsFallback(root: AccessibilityNodeInfo) {
-        val chats = AccessibilityTree.findByViewIdHints(root, CHAT_ID_HINTS)
-            ?: AccessibilityTree.findByControlLabel(root, CHAT_LABELS)
+        val chats = findChatsAnchor(root)
 
         // First establish Chats as the navigation anchor. We deliberately wait for a
         // fresh accessibility snapshot before scanning; the root that existed before
@@ -683,8 +768,7 @@ class WaAccessibilityService : AccessibilityService() {
             return
         }
 
-        val all = AccessibilityTree.findByViewIdHints(root, ALL_ID_HINTS)
-            ?: AccessibilityTree.findFilterControl(root, ALL_LABELS, FILTER_PEER_LABELS)
+        val all = findAllFilter(root)
         if (syncOpeningMisses <= 1 && all != null) {
             clickTarget(all)
             syncOpeningMisses = 2
@@ -693,7 +777,16 @@ class WaAccessibilityService : AccessibilityService() {
         }
 
         val list = AccessibilityTree.bestConversationScrollable(root)
-        if (list != null) {
+        val screenEvidence = AccessibilityTree.screenEvidence(root)
+        val safeAllChatsSurface = list != null &&
+            screenEvidence.kind != ScreenKind.CHAT &&
+            screenEvidence.kind != ScreenKind.SEARCH &&
+            (chats != null || all != null)
+        if (safeAllChatsSurface) {
+            if (all != null && AccessibilityTree.controlSelectionEvidence(all) == FilterEvidence.ACTIVE) {
+                recordVerifiedSelector(SelectorRole.ALL_FILTER, all)
+            }
+            if (chats != null) recordVerifiedSelector(SelectorRole.CHATS_ANCHOR, chats)
             recordStageSuccess("SYNC_ALL_CHATS_OPENING")
             syncEndGuard.reset()
             syncPreviousViewport = emptyList()
@@ -731,10 +824,9 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun selectAllInSelectionMode(root: AccessibilityNodeInfo) {
-        val selectAll = AccessibilityTree.findByViewIdHints(root, SELECT_ALL_ID_HINTS)
-            ?: AccessibilityTree.findByControlLabel(root, SELECT_ALL_LABELS)
-            ?: AccessibilityTree.findByAnyText(root, SELECT_ALL_LABELS)
+        val selectAll = findSelectAll(root)
         if (selectAll != null && clickTarget(selectAll)) {
+            recordVerifiedSelector(SelectorRole.SELECT_ALL, selectAll)
             recordStageSuccess("SYNC_SELECTION_SELECT_ALL")
             syncEndGuard.reset()
             syncPreviousViewport = emptyList()
@@ -802,12 +894,12 @@ class WaAccessibilityService : AccessibilityService() {
 
     private fun verifyGroupFilter(root: AccessibilityNodeInfo) {
         filterVerifyAttempts++
-        val groupControl = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-            ?: AccessibilityTree.findFilterControl(root, GROUP_LABELS, FILTER_PEER_LABELS)
+        val groupControl = findGroupsFilter(root)
         val evidence = AccessibilityTree.controlSelectionEvidence(groupControl)
         val decision = FilterVerificationPolicy.decide(evidence, effectiveMode, filterVerifyAttempts)
         when (decision) {
             FilterDecision.PROCEED -> {
+                recordVerifiedSelector(SelectorRole.GROUPS_FILTER, groupControl)
                 recordStageSuccess("SYNC_VERIFY_FILTER")
                 DiagnosticLog.record("GROUP_FILTER_VERIFIED", mapOf("attempts" to filterVerifyAttempts))
                 setSyncStage(SyncStage.SCANNING)
@@ -821,13 +913,13 @@ class WaAccessibilityService : AccessibilityService() {
             }
             FilterDecision.RETRY -> {
                 if (evidence == FilterEvidence.INACTIVE) {
-                    val groups = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-                        ?: AccessibilityTree.findFilterControl(root, GROUP_LABELS, FILTER_PEER_LABELS)
+                    val groups = findGroupsFilter(root)
                     clickTarget(groups)
                 }
                 scheduleFilterVerificationProbe()
             }
             FilterDecision.FAIL -> {
+                recordFailedSelector(SelectorRole.GROUPS_FILTER, groupControl)
                 recordTransientFailure("GROUP_FILTER_VERIFY_FAILED")
                 DiagnosticLog.record(
                     "GROUP_FILTER_VERIFY_FAILED",
@@ -852,11 +944,16 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun scheduleSyncOpeningProbe() {
+        val expectedLease = currentOperationLease() ?: return
         syncOpeningProbeJob?.cancel()
         syncOpeningProbeJob = scope.launch {
-            var attempt = 0
-            while (attempt < NavigationProbePolicy.maxAttempts(effectiveMode)) {
-                delay(NavigationProbePolicy.delayMs(effectiveMode, attempt))
+            val probeMode = effectiveMode
+            repeat(NavigationProbePolicy.maxAttempts(probeMode)) { attempt ->
+                delay(NavigationProbePolicy.delayMs(probeMode, attempt))
+                if (!operationLeaseController.isCurrent(expectedLease)) {
+                    DiagnosticLog.record("STALE_OPERATION_CALLBACK_IGNORED", mapOf("source" to "sync-opening", "generation" to expectedLease.generation))
+                    return@launch
+                }
                 val current = operation as? Operation.Sync ?: return@launch
                 if (current.stage !in setOf(SyncStage.OPENING, SyncStage.ALL_CHATS_OPENING) ||
                     BotRuntime.pauseRequested || BotRuntime.stopRequested
@@ -868,26 +965,22 @@ class WaAccessibilityService : AccessibilityService() {
                         handleSync(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
                     } finally {
                         eventGuard.set(false)
-                        scheduleCoalescedDrain()
                     }
                     val after = operation as? Operation.Sync
                     if (after == null || after.stage !in setOf(SyncStage.OPENING, SyncStage.ALL_CHATS_OPENING)) {
                         return@launch
                     }
                 }
-                attempt++
             }
-            DiagnosticLog.record(
-                "SYNC_NAV_PROBE_EXHAUSTED",
-                mapOf("mode" to effectiveMode.name, "attempts" to attempt),
-            )
         }
     }
 
     private fun scheduleFilterVerificationProbe() {
+        val expectedLease = currentOperationLease() ?: return
         syncProbeJob?.cancel()
         syncProbeJob = scope.launch {
             delay(syncTiming.nextProbeDelay(scrollAccepted = false))
+            if (!operationLeaseController.isCurrent(expectedLease)) return@launch
             val current = operation as? Operation.Sync ?: return@launch
             if (current.stage != SyncStage.VERIFY_FILTER || BotRuntime.pauseRequested || BotRuntime.stopRequested) return@launch
             rootInActiveWindow?.let(::verifyGroupFilter)
@@ -1007,7 +1100,7 @@ class WaAccessibilityService : AccessibilityService() {
             throughputMeter.addGroups(newCount)
             recordStageSuccess("SYNC_SCAN_PROGRESS")
         }
-        BotRuntime.update(BotRuntime.state.value.copy(phase = RuntimePhase.SYNCING, title = "Synchronizing groups", detail = "${syncSeen.size} groups found", current = syncSeen.size, total = 0))
+        BotRuntime.update(BotRuntime.state.value.copy(phase = RuntimePhase.SYNCING_GROUPS, title = "Synchronizing groups", detail = "${syncSeen.size} groups found", current = syncSeen.size, total = 0))
         publishTelemetry()
 
         val scrollable = AccessibilityTree.bestConversationScrollable(root)
@@ -1057,9 +1150,14 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun scheduleSyncProbe(delayMs: Long) {
+        val expectedLease = currentOperationLease() ?: return
         syncProbeJob?.cancel()
         syncProbeJob = scope.launch {
             delay(delayMs)
+            if (!operationLeaseController.isCurrent(expectedLease)) {
+                DiagnosticLog.record("STALE_OPERATION_CALLBACK_IGNORED", mapOf("source" to "sync-probe", "generation" to expectedLease.generation))
+                return@launch
+            }
             if (operation !is Operation.Sync || BotRuntime.pauseRequested || BotRuntime.stopRequested) return@launch
             rootInActiveWindow?.let { scanGroupViewport(it, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, fromProbe = true) }
         }
@@ -1069,6 +1167,12 @@ class WaAccessibilityService : AccessibilityService() {
         markMissing: Boolean,
         verification: String,
     ) {
+        val syncOperation = operation as? Operation.Sync ?: return
+        val lease = syncOperation.lease
+        if (!operationLeaseController.claimTerminal(lease)) {
+            DiagnosticLog.record("SYNC_TERMINAL_DUPLICATE_IGNORED", mapOf("generation" to lease.generation))
+            return
+        }
         val instanceId = targetInstanceId
         val completedSyncId = syncId
         val previousPresent = syncExistingGroups.count { it.present }
@@ -1082,9 +1186,9 @@ class WaAccessibilityService : AccessibilityService() {
             performGlobalAction(GLOBAL_ACTION_BACK)
             selectionModeActive = false
         }
-        clearOperation()
         scope.launch {
             if (syncSeen.isNotEmpty()) ServiceLocator.groups.upsert(syncSeen.values.toList())
+            if (!operationLeaseController.isCurrent(lease)) return@launch
             if (coverageDecision == SyncCoverageDecision.SAFETY_STOP) {
                 recordHardFailure("SYNC_COVERAGE_SAFETY_STOP")
                 DiagnosticLog.record(
@@ -1104,11 +1208,13 @@ class WaAccessibilityService : AccessibilityService() {
                         previousPresent,
                     )
                 )
+                clearOperation(lease)
                 stopRuntimeService()
                 return@launch
             }
             if (markMissing && instanceId != null && completedSyncId != null) {
                 ServiceLocator.groups.markMissing(instanceId, completedSyncId)
+                if (!operationLeaseController.isCurrent(lease)) return@launch
             }
             val preservationNote = if (markMissing) "" else " • existing unseen groups preserved"
             BotRuntime.update(
@@ -1135,6 +1241,7 @@ class WaAccessibilityService : AccessibilityService() {
                     "markMissing" to markMissing,
                 )
             )
+            clearOperation(lease)
             stopRuntimeService()
         }
     }
@@ -1160,10 +1267,8 @@ class WaAccessibilityService : AccessibilityService() {
     private fun returnToGroupList(root: AccessibilityNodeInfo) {
         val evidence = AccessibilityTree.screenEvidence(root)
         val listReady = evidence.kind == ScreenKind.GROUP_LIST && evidence.confidence >= 60
-        val groupsFilter = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-            ?: AccessibilityTree.findFilterControl(root, GROUP_LABELS, FILTER_PEER_LABELS)
-        val chats = AccessibilityTree.findByViewIdHints(root, CHAT_ID_HINTS)
-            ?: AccessibilityTree.findByControlLabel(root, CHAT_LABELS)
+        val groupsFilter = findGroupsFilter(root)
+        val chats = findChatsAnchor(root)
         if (listReady || groupsFilter != null || chats != null) {
             recordStageSuccess("EXTRACT_RETURNING")
             setExtractStage(ExtractStage.PREPARE_LIST)
@@ -1193,6 +1298,7 @@ class WaAccessibilityService : AccessibilityService() {
                 recordStageSuccess("EXTRACT_PREPARE_LIST")
                 currentQueue = next
                 currentGroup = group
+                groupTerminalGate.reset(next.id)
                 viewportStartFingerprint = null
                 newestViewportFingerprint = null
                 previousViewportFingerprint = null
@@ -1208,12 +1314,11 @@ class WaAccessibilityService : AccessibilityService() {
                 extractionNavigationProbeJob?.cancel()
                 extractionNavigationProbeJob = null
                 extractionNavigationMisses = 0
-                ServiceLocator.database.queueDao().updateState(next.id, "LOCATING", next.attempts, null)
+                ServiceLocator.database.queueDao().updateState(next.id, "RUNNING", next.attempts, null)
                 setExtractStage(ExtractStage.ACTIVATE_GROUP_FILTER)
                 BotRuntime.update(RuntimeSnapshot(RuntimePhase.EXTRACTING, "Locating group", group.displayTitle, next.position + 1, totalQueue, BotRuntime.state.value.linksFound))
-                if (!launchConfiguredInstance(recovery = true)) {
-                    failCurrentGroup("INSTANCE_LAUNCH_FAILED", "No execution engine could reopen the selected WhatsApp instance")
-                }
+                targetInstance?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
+                ?: targetPackage?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
             } finally {
                 prepareInFlight.set(false)
             }
@@ -1221,10 +1326,8 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun activateGroupFilter(root: AccessibilityNodeInfo) {
-        val groups = AccessibilityTree.findByViewIdHints(root, GROUP_ID_HINTS)
-            ?: AccessibilityTree.findFilterControl(root, GROUP_LABELS, FILTER_PEER_LABELS)
-        val chats = AccessibilityTree.findByViewIdHints(root, CHAT_ID_HINTS)
-            ?: AccessibilityTree.findByControlLabel(root, CHAT_LABELS)
+        val groups = findGroupsFilter(root)
+        val chats = findChatsAnchor(root)
         val search = AccessibilityTree.findByViewIdHints(root, listOf("search"))
             ?: AccessibilityTree.findByControlLabel(root, SEARCH_LABELS)
 
@@ -1290,23 +1393,41 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun openSearch(root: AccessibilityNodeInfo) {
+        val evidence = AccessibilityTree.screenEvidence(root)
         val existingEditor = AccessibilityTree.findEditable(root)
-        if (existingEditor != null) {
-            recordStageSuccess("EXTRACT_OPEN_SEARCH")
-            setExtractStage(ExtractStage.TYPE_QUERY)
-            typeQuery(root)
-            return
-        }
         val search = AccessibilityTree.findByViewIdHints(root, listOf("search"))
             ?: AccessibilityTree.findByControlLabel(root, SEARCH_LABELS)
             ?: AccessibilityTree.findByAnyText(root, SEARCH_LABELS)
-        if (search != null && clickTarget(search)) {
-            recordStageSuccess("EXTRACT_OPEN_SEARCH")
-            setExtractStage(ExtractStage.TYPE_QUERY)
+        when (SearchEntryPolicy.decide(evidence.kind, existingEditor != null, search != null)) {
+            SearchEntryAction.BACK_TO_CHATS -> {
+                DiagnosticLog.record("EXTRACT_SEARCH_CHAT_RECOVERY", mapOf("confidence" to evidence.confidence))
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                setExtractStage(ExtractStage.ACTIVATE_GROUP_FILTER)
+            }
+            SearchEntryAction.USE_EXISTING_EDITOR -> {
+                recordStageSuccess("EXTRACT_OPEN_SEARCH")
+                setExtractStage(ExtractStage.TYPE_QUERY)
+                typeQuery(root)
+            }
+            SearchEntryAction.OPEN_GLOBAL_SEARCH -> {
+                if (search != null && clickTarget(search)) {
+                    // Dispatch acceptance is not success. Stay in OPEN_SEARCH until a
+                    // subsequent snapshot proves ScreenKind.SEARCH + editor.
+                    DiagnosticLog.record("EXTRACT_GLOBAL_SEARCH_CLICKED", mapOf("screen" to evidence.kind.name))
+                    scheduleExtractionNavigationProbe()
+                }
+            }
+            SearchEntryAction.WAIT -> Unit
         }
     }
 
     private fun typeQuery(root: AccessibilityNodeInfo) {
+        val evidence = AccessibilityTree.screenEvidence(root)
+        if (evidence.kind != ScreenKind.SEARCH || evidence.confidence < 60) {
+            DiagnosticLog.record("EXTRACT_QUERY_SCREEN_NOT_VERIFIED", mapOf("screen" to evidence.kind.name, "confidence" to evidence.confidence))
+            setExtractStage(ExtractStage.OPEN_SEARCH)
+            return
+        }
         val editor = AccessibilityTree.findEditable(root) ?: return
         val title = currentGroup?.displayTitle ?: return
         if (AccessibilityTree.setText(editor, title)) {
@@ -1323,7 +1444,7 @@ class WaAccessibilityService : AccessibilityService() {
             is SearchNodeResolution.Unique -> {
                 if (clickTarget(resolution.node)) {
                     recordStageSuccess("EXTRACT_OPEN_RESULT")
-                    currentQueue?.let { q -> scope.launch { ServiceLocator.database.queueDao().updateState(q.id, "OPENING", q.attempts, null) } }
+                    currentQueue?.let { q -> scope.launch { ServiceLocator.database.queueDao().updateState(q.id, "RUNNING", q.attempts, null) } }
                     setExtractStage(ExtractStage.VERIFY_CHAT)
                 }
             }
@@ -1338,13 +1459,30 @@ class WaAccessibilityService : AccessibilityService() {
     private fun failCurrentGroup(code: String, detail: String) {
         val queue = currentQueue ?: return
         val group = currentGroup ?: return
+        val lease = currentOperationLease() ?: return
+        if (!operationLeaseController.isCurrent(lease)) return
+        if (!groupTerminalGate.claim(queue.id)) {
+            DiagnosticLog.record("GROUP_TERMINAL_DUPLICATE_IGNORED", mapOf("state" to "FAILED", "group" to group.id.take(12)))
+            return
+        }
         if (code !in setOf("AMBIGUOUS_GROUP", "STAGE_TIMEOUT", "PERSISTENCE_ERROR")) recordTransientFailure(code)
         DiagnosticLog.record("GROUP_FAIL", mapOf("code" to code, "group" to group.id.take(12)))
         extractionProbeJob?.cancel()
         extractionProbeJob = null
         scope.launch {
-            ServiceLocator.database.queueDao().updateState(queue.id, "FAILED", queue.attempts + 1, "$code: $detail")
-            ServiceLocator.groups.updateExtraction(group.id, "FAILED", group.checkpoint)
+            ServiceLocator.groups.finalizeExtractionTransition(
+                queueId = queue.id,
+                queueState = "FAILED",
+                attempts = queue.attempts + 1,
+                error = "$code: $detail",
+                groupId = group.id,
+                groupState = "FAILED",
+                checkpoint = group.checkpoint,
+            )
+            if (!operationLeaseController.isCurrent(lease)) {
+                DiagnosticLog.record("STALE_OPERATION_CALLBACK_IGNORED", mapOf("source" to "group-fail", "generation" to lease.generation))
+                return@launch
+            }
             performGlobalAction(GLOBAL_ACTION_BACK)
             currentGroup = null
             currentQueue = null
@@ -1358,7 +1496,7 @@ class WaAccessibilityService : AccessibilityService() {
         val semanticMatch = screenMatches(root, ScreenKind.CHAT, minConfidence = 80, expectedTitle = group.displayTitle)
         if (semanticMatch || AccessibilityTree.isLikelyChatScreen(root, group.displayTitle)) {
             recordStageSuccess("EXTRACT_VERIFY_CHAT")
-            currentQueue?.let { q -> scope.launch { ServiceLocator.database.queueDao().updateState(q.id, "SCANNING", q.attempts, null) } }
+            currentQueue?.let { q -> scope.launch { ServiceLocator.database.queueDao().updateState(q.id, "RUNNING", q.attempts, null) } }
             setExtractStage(ExtractStage.SCAN_VIEWPORT)
             scanChatViewport(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         }
@@ -1416,7 +1554,7 @@ class WaAccessibilityService : AccessibilityService() {
             scope.launch {
                 try {
                     val saveText = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("save_message_text", false)
-                    ServiceLocator.links.recordBatch(
+                    val persistResult = ServiceLocator.links.recordBatch(
                         findings.map { (batch, candidate, fingerprintSource) ->
                             com.waalothmany.linkbot.data.LinkRecordRequest(
                                 candidate = candidate,
@@ -1430,10 +1568,21 @@ class WaAccessibilityService : AccessibilityService() {
                     )
                     DiagnosticLog.record(
                         "LINK_PERSISTED",
-                        mapOf("count" to detected, "group" to group.id.take(12), "session" to sessionId.take(12)),
+                        mapOf(
+                            "count" to persistResult.insertedOccurrences,
+                            "newLinks" to persistResult.newLinks,
+                            "duplicates" to persistResult.duplicateOccurrences,
+                            "detected" to detected,
+                            "group" to group.id.take(12),
+                            "session" to sessionId.take(12),
+                        ),
                     )
-                    throughputMeter.addLinks(detected)
-                    BotRuntime.update(BotRuntime.state.value.copy(linksFound = BotRuntime.state.value.linksFound + detected))
+                    throughputMeter.addLinks(persistResult.insertedOccurrences)
+                    BotRuntime.update(
+                        BotRuntime.state.value.copy(
+                            linksFound = BotRuntime.state.value.linksFound + persistResult.insertedOccurrences
+                        )
+                    )
                     publishTelemetry()
                     advanceChatViewport(
                         groupId = group.id,
@@ -1515,11 +1664,16 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun scheduleExtractionNavigationProbe() {
+        val expectedLease = currentOperationLease() ?: return
         extractionNavigationProbeJob?.cancel()
         extractionNavigationProbeJob = scope.launch {
-            var attempt = 0
-            while (attempt < NavigationProbePolicy.maxAttempts(effectiveMode)) {
-                delay(NavigationProbePolicy.delayMs(effectiveMode, attempt))
+            val probeMode = effectiveMode
+            repeat(NavigationProbePolicy.maxAttempts(probeMode)) { attempt ->
+                delay(NavigationProbePolicy.delayMs(probeMode, attempt))
+                if (!operationLeaseController.isCurrent(expectedLease)) {
+                    DiagnosticLog.record("STALE_OPERATION_CALLBACK_IGNORED", mapOf("source" to "extract-navigation", "generation" to expectedLease.generation))
+                    return@launch
+                }
                 val current = operation as? Operation.Extract ?: return@launch
                 if (current.stage !in setOf(
                         ExtractStage.ACTIVATE_GROUP_FILTER,
@@ -1537,43 +1691,61 @@ class WaAccessibilityService : AccessibilityService() {
                         handleExtraction(root, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
                     } finally {
                         eventGuard.set(false)
-                        scheduleCoalescedDrain()
                     }
                     val after = operation as? Operation.Extract ?: return@launch
                     if (after.stage == ExtractStage.SCAN_VIEWPORT || after.stage == ExtractStage.PREPARE_LIST) return@launch
                 }
-                attempt++
             }
-            DiagnosticLog.record(
-                "EXTRACT_NAV_PROBE_EXHAUSTED",
-                mapOf("mode" to effectiveMode.name, "attempts" to attempt),
-            )
         }
     }
 
     private fun scheduleExtractionProbe(delayMs: Long) {
+        val expectedLease = currentOperationLease() ?: return
         extractionProbeJob?.cancel()
         extractionProbeJob = scope.launch {
             delay(delayMs)
+            if (!operationLeaseController.isCurrent(expectedLease)) {
+                DiagnosticLog.record("STALE_OPERATION_CALLBACK_IGNORED", mapOf("source" to "extract-probe", "generation" to expectedLease.generation))
+                return@launch
+            }
             if (operation !is Operation.Extract || BotRuntime.pauseRequested || BotRuntime.stopRequested) return@launch
             rootInActiveWindow?.let { scanChatViewport(it, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, fromProbe = true) }
         }
     }
 
+    private fun currentCheckpointForPersistence(): String? = when (extractionMode) {
+        AutomationMode.UNREAD_ONLY -> newestViewportFingerprint ?: viewportStartFingerprint
+        AutomationMode.DEEP, AutomationMode.NEW_ONLY -> viewportStartFingerprint
+    }
+
     private fun completeCurrentGroup(state: String, error: String?) {
         val queue = currentQueue ?: return
         val group = currentGroup ?: return
-        DiagnosticLog.record("GROUP_COMPLETE", mapOf("state" to state, "group" to group.id.take(12)))
-        val latestCheckpoint = when (extractionMode) {
-            AutomationMode.UNREAD_ONLY -> newestViewportFingerprint ?: viewportStartFingerprint
-            AutomationMode.DEEP, AutomationMode.NEW_ONLY -> viewportStartFingerprint
+        val lease = currentOperationLease() ?: return
+        if (!operationLeaseController.isCurrent(lease)) return
+        if (!groupTerminalGate.claim(queue.id)) {
+            DiagnosticLog.record("GROUP_TERMINAL_DUPLICATE_IGNORED", mapOf("state" to state, "group" to group.id.take(12)))
+            return
         }
+        DiagnosticLog.record("GROUP_COMPLETE", mapOf("state" to state, "group" to group.id.take(12)))
+        val latestCheckpoint = currentCheckpointForPersistence()
         extractionProbeJob?.cancel()
         extractionProbeJob = null
         extractionRequestedFingerprint = null
         scope.launch {
-            ServiceLocator.database.queueDao().updateState(queue.id, state, queue.attempts + if (state == "FAILED") 1 else 0, error)
-            ServiceLocator.groups.updateExtraction(group.id, if (state == "COMPLETED") "COMPLETED" else state, latestCheckpoint)
+            ServiceLocator.groups.finalizeExtractionTransition(
+                queueId = queue.id,
+                queueState = state,
+                attempts = queue.attempts + if (state == "FAILED") 1 else 0,
+                error = error,
+                groupId = group.id,
+                groupState = if (state == "COMPLETED") "COMPLETED" else state,
+                checkpoint = latestCheckpoint,
+            )
+            if (!operationLeaseController.isCurrent(lease)) {
+                DiagnosticLog.record("STALE_OPERATION_CALLBACK_IGNORED", mapOf("source" to "group-complete", "generation" to lease.generation))
+                return@launch
+            }
             if (state in setOf("COMPLETED", "SKIPPED")) {
                 groupsCompleted++
                 throughputMeter.addGroups(1)
@@ -1589,10 +1761,16 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun finishExtraction() {
+        val extractOperation = operation as? Operation.Extract ?: return
+        val lease = extractOperation.lease
+        if (!operationLeaseController.claimTerminal(lease)) {
+            DiagnosticLog.record("EXTRACTION_TERMINAL_DUPLICATE_IGNORED", mapOf("generation" to lease.generation))
+            return
+        }
         val sessionId = extractionSessionId
-        clearOperation()
         scope.launch {
             val queue = sessionId?.let { ServiceLocator.database.queueDao().forSession(it) }.orEmpty()
+            if (!operationLeaseController.isCurrent(lease)) return@launch
             val progress = QueueProgressPolicy.summarize(queue.map { it.state })
             val sessionState = if (progress.failed > 0) "COMPLETED_WITH_ERRORS" else "COMPLETED"
             if (sessionId != null) {
@@ -1607,6 +1785,7 @@ class WaAccessibilityService : AccessibilityService() {
                     )
                 }
             }
+            if (!operationLeaseController.isCurrent(lease)) return@launch
             val title = if (progress.failed > 0) "Extraction complete with errors" else "Extraction complete"
             val detail = if (progress.failed > 0) "${progress.failed} group(s) failed • Retry safe failures or review protected items" else "All queued groups processed"
             BotRuntime.update(
@@ -1632,7 +1811,22 @@ class WaAccessibilityService : AccessibilityService() {
                     "linksPerMin" to throughput.linksPerMinute.toInt(),
                 )
             )
-            stopRuntimeService()
+            val autoRetry = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("auto_retry_failed", true)
+            val safeRetryCount = if (autoRetry) {
+                queue.count { item ->
+                    item.state == "FAILED" && FailureRecoveryPolicy.decide(item.lastError, item.attempts) == FailureDisposition.RETRY
+                }
+            } else {
+                0
+            }
+            clearOperation(lease)
+            if (safeRetryCount > 0) {
+                DiagnosticLog.record("AUTO_RETRY_TRIGGERED", mapOf("session" to (sessionId?.take(12) ?: "none"), "count" to safeRetryCount))
+                retryFailed()
+            } else {
+                if (sessionId != null) AutomaticExportCoordinator.runForCompletedSession(this@WaAccessibilityService, sessionId)
+                stopRuntimeService()
+            }
         }
     }
 
@@ -1656,7 +1850,9 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun setSyncStage(stage: SyncStage) {
-        operation = Operation.Sync(stage)
+        val lease = operationLeaseController.current() ?: return
+        if (!operationLeaseController.isCurrent(lease)) return
+        operation = Operation.Sync(stage, lease)
         if (stage in setOf(SyncStage.OPENING, SyncStage.ALL_CHATS_OPENING)) {
             scheduleSyncOpeningProbe()
         } else {
@@ -1667,7 +1863,9 @@ class WaAccessibilityService : AccessibilityService() {
     }
 
     private fun setExtractStage(stage: ExtractStage) {
-        operation = Operation.Extract(stage)
+        val lease = operationLeaseController.current() ?: return
+        if (!operationLeaseController.isCurrent(lease)) return
+        operation = Operation.Extract(stage, lease)
         if (stage in setOf(
                 ExtractStage.ACTIVATE_GROUP_FILTER,
                 ExtractStage.OPEN_SEARCH,
@@ -1685,9 +1883,21 @@ class WaAccessibilityService : AccessibilityService() {
         armCurrentStageWatchdog()
     }
 
-    private fun clearOperation() {
+    private fun currentOperationLease(): OperationLease? = when (val current = operation) {
+        is Operation.Sync -> current.lease
+        is Operation.Extract -> current.lease
+        Operation.None -> null
+    }
+
+    private fun clearOperation(expectedLease: OperationLease? = currentOperationLease()) {
+        if (expectedLease != null && !operationLeaseController.invalidate(expectedLease)) {
+            DiagnosticLog.record("STALE_OPERATION_CLEAR_IGNORED", mapOf("generation" to expectedLease.generation))
+            return
+        }
+        if (expectedLease == null) operationLeaseController.invalidate()
         operation = Operation.None
-        operationLease.releaseAny()
+        groupTerminalGate.clear()
+        eventCoalescer.reset()
         viewportCommitInFlight.set(false)
         syncOpeningProbeJob?.cancel()
         syncOpeningProbeJob = null
@@ -1711,6 +1921,12 @@ class WaAccessibilityService : AccessibilityService() {
         val timeout = effectivePerformanceProfile().stageTimeoutMs
         stageWatchdogJob = scope.launch {
             delay(timeout)
+            val snapshotLease = when (snapshot) {
+                is Operation.Sync -> snapshot.lease
+                is Operation.Extract -> snapshot.lease
+                Operation.None -> null
+            }
+            if (snapshotLease != null && !operationLeaseController.isCurrent(snapshotLease)) return@launch
             if (BotRuntime.pauseRequested || BotRuntime.stopRequested || operation != snapshot) return@launch
             when (snapshot) {
                 is Operation.Sync -> {
@@ -1752,12 +1968,8 @@ class WaAccessibilityService : AccessibilityService() {
                                         mapOf("stage" to key, "attempt" to stageCircuitBreaker.failureCount(key)),
                                     )
                                     setSyncStage(SyncStage.ALL_CHATS_OPENING)
-                                    if (!launchConfiguredInstance(recovery = true)) {
-                                        recordHardFailure(key)
-                                        clearOperation()
-                                        BotRuntime.update(RuntimeSnapshot(RuntimePhase.ERROR, "WhatsApp recovery failed", "No execution engine could reopen the selected instance"))
-                                        stopRuntimeService()
-                                    }
+                                    targetInstance?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
+                ?: targetPackage?.let { WhatsAppInstanceDetector.launch(this@WaAccessibilityService, it) }
                                 }
                                 CircuitDecision.TRIP -> {
                                     recordHardFailure(key)
@@ -1949,8 +2161,8 @@ class WaAccessibilityService : AccessibilityService() {
 
     private sealed interface Operation {
         data object None : Operation
-        data class Sync(val stage: SyncStage) : Operation
-        data class Extract(val stage: ExtractStage) : Operation
+        data class Sync(val stage: SyncStage, val lease: OperationLease) : Operation
+        data class Extract(val stage: ExtractStage, val lease: OperationLease) : Operation
     }
 
     private enum class SyncStage {

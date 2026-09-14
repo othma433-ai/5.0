@@ -50,8 +50,8 @@ fun main() {
             operationBusy = false,
         )
     )
-    check(notificationsDenied.allowed) { notificationsDenied.toString() }
-    check(notificationsDenied.reason == null)
+    check(!notificationsDenied.allowed) { notificationsDenied.toString() }
+    check(notificationsDenied.reason == OperationStartBlockReason.NOTIFICATIONS_DISABLED)
 
     val busy = OperationStartGate.evaluate(
         OperationStartContext(

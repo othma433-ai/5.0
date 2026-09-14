@@ -3,8 +3,3 @@
 local.properties
 **/build/
 *.iml
-release-output/
-*.apk
-
-__pycache__/
-*.pyc

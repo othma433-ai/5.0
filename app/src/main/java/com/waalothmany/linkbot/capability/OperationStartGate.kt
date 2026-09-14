@@ -30,6 +30,7 @@ object OperationStartGate {
             !context.packageLaunchable -> OperationStartBlockReason.PACKAGE_NOT_LAUNCHABLE
             !context.accessibilityEnabled -> OperationStartBlockReason.ACCESSIBILITY_DISABLED
             !context.accessibilityConnected -> OperationStartBlockReason.ACCESSIBILITY_NOT_CONNECTED
+            !context.notificationsReady -> OperationStartBlockReason.NOTIFICATIONS_DISABLED
             context.operationBusy -> OperationStartBlockReason.OPERATION_ALREADY_RUNNING
             else -> null
         }

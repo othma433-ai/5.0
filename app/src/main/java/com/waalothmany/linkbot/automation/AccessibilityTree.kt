@@ -5,6 +5,8 @@ import android.os.Bundle
 import android.text.Spanned
 import android.text.style.URLSpan
 import android.view.accessibility.AccessibilityNodeInfo
+import com.waalothmany.linkbot.whatsapp.AdaptiveSelectorPolicy
+import com.waalothmany.linkbot.whatsapp.SelectorSignature
 import java.security.MessageDigest
 
 object AccessibilityTree {
@@ -161,6 +163,76 @@ object AccessibilityTree {
             val id = node.viewIdResourceName.orEmpty().lowercase()
             lowered.any { hint -> id.contains(hint) }
         }
+    }
+
+    /** Matches Android resource-id suffixes independent of package/profile prefix. */
+    fun findByViewIdSuffixes(root: AccessibilityNodeInfo?, suffixes: Collection<String>): AccessibilityNodeInfo? {
+        val wanted = suffixes.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+        if (wanted.isEmpty()) return null
+        return flatten(root).firstOrNull { node ->
+            AdaptiveSelectorPolicy.resourceIdSuffix(node.viewIdResourceName)?.lowercase() in wanted
+        }
+    }
+
+    /**
+     * Resolves selectors learned from a previously verified control. Every non-null
+     * signature component must match, so a generic shared id plus a label remains safe.
+     */
+    fun findBySelectorSignatures(
+        root: AccessibilityNodeInfo?,
+        signatures: Collection<SelectorSignature>,
+    ): AccessibilityNodeInfo? {
+        if (root == null || signatures.isEmpty()) return null
+        val nodes = flatten(root)
+        signatures.forEach { signature ->
+            val match = nodes.firstOrNull { node ->
+                val suffix = AdaptiveSelectorPolicy.resourceIdSuffix(node.viewIdResourceName)
+                val idOk = signature.resourceIdSuffix == null ||
+                    signature.resourceIdSuffix.equals(suffix, ignoreCase = true)
+                val labelOk = signature.normalizedLabel == null || collectText(node).any { value ->
+                    ControlLabelPolicy.canonical(value) == signature.normalizedLabel
+                }
+                val classOk = signature.className == null ||
+                    signature.className.equals(node.className?.toString(), ignoreCase = true)
+                val structuralOk = signature.resourceIdSuffix != null || generateSequence(node as AccessibilityNodeInfo?) { it.parent }
+                    .take(3)
+                    .filterNotNull()
+                    .any { candidate ->
+                        val cls = candidate.className?.toString().orEmpty().lowercase()
+                        val id = candidate.viewIdResourceName.orEmpty().lowercase()
+                        candidate.isClickable || candidate.isCheckable || candidate.isSelected || candidate.isChecked ||
+                            cls.contains("button") || cls.contains("chip") || cls.contains("tab") ||
+                            id.contains("filter") || id.contains("tab") || id.contains("navigation") || id.contains("action")
+                    }
+                idOk && labelOk && classOk && structuralOk
+            }
+            if (match != null) return match
+        }
+        return null
+    }
+
+    /** Copies only stable control metadata; no AccessibilityNodeInfo is retained. */
+    fun selectorSignature(node: AccessibilityNodeInfo?): SelectorSignature? {
+        node ?: return null
+        val chain = generateSequence(node as AccessibilityNodeInfo?) { it.parent }.take(4).filterNotNull().toList()
+        val controlNode = chain.firstOrNull { candidate ->
+            val cls = candidate.className?.toString().orEmpty().lowercase()
+            val id = candidate.viewIdResourceName.orEmpty().lowercase()
+            candidate.isClickable || candidate.isCheckable || candidate.isSelected || candidate.isChecked ||
+                cls.contains("button") || cls.contains("chip") || cls.contains("tab") ||
+                id.contains("filter") || id.contains("tab") || id.contains("navigation") || id.contains("action")
+        }
+        val stableNode = controlNode ?: node
+        val resourceSuffix = AdaptiveSelectorPolicy.resourceIdSuffix(stableNode.viewIdResourceName)
+            ?: chain.asSequence().mapNotNull { AdaptiveSelectorPolicy.resourceIdSuffix(it.viewIdResourceName) }.firstOrNull()
+        val label = collectText(stableNode)
+            .map(ControlLabelPolicy::canonical)
+            .firstOrNull { it.isNotBlank() && it.length <= 96 && !it.contains("http://") && !it.contains("https://") }
+        return SelectorSignature(
+            resourceIdSuffix = resourceSuffix,
+            normalizedLabel = label,
+            className = stableNode.className?.toString(),
+        ).takeIf { it.isUseful() }
     }
 
     fun filterEvidence(root: AccessibilityNodeInfo?, labels: Collection<String>, idHints: Collection<String>): FilterEvidence {

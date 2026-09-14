@@ -5,8 +5,12 @@ data class CapabilityFlags(
     val accessibilityConnected: Boolean,
     val overlay: Boolean,
     val notifications: Boolean,
+    val foregroundServiceReady: Boolean = true,
+    val storageAccessFrameworkReady: Boolean = true,
     val shizukuInstalled: Boolean,
+    val shizukuUsable: Boolean = false,
     val rootDetected: Boolean,
+    val rootUsable: Boolean = false,
 )
 
 data class ReadinessReport(
@@ -27,25 +31,28 @@ object ReadinessEvaluator {
             } else if (!flags.accessibilityConnected) {
                 add("Accessibility service not connected")
             }
+            if (!flags.foregroundServiceReady) add("Foreground service unavailable")
             if (whatsappInstances <= 0) add("No WhatsApp instance detected")
         }
 
         val notes = buildList {
             if (!flags.notifications) add("Notifications recommended")
             if (!flags.overlay) add("Overlay optional")
-            if (flags.shizukuInstalled) {
-                add("Shizuku detected; Binder/permission readiness is verified at runtime")
-            }
-            if (flags.rootDetected) {
-                add("Root detected; readiness requires an execution probe")
-            }
+            if (!flags.storageAccessFrameworkReady) add("Storage Access Framework unavailable; import/export browsing limited")
+            if (flags.shizukuInstalled && !flags.shizukuUsable) add("Shizuku detected; permission/binder not ready")
+            if (flags.rootDetected && !flags.rootUsable) add("Root binary detected; usable root permission not proven")
         }
-
+        val mode = RuntimeCapabilityResolver.resolve(
+            shizukuUsable = flags.shizukuUsable,
+            rootUsable = flags.rootUsable,
+            shizukuInstalled = flags.shizukuInstalled,
+            rootDetected = flags.rootDetected,
+        )
         return ReadinessReport(
             coreReady = blockers.isEmpty(),
             blockers = blockers,
             notes = notes,
-            executionMode = "ADAPTIVE_MULTI_ENGINE",
+            executionMode = mode.name,
         )
     }
 }
